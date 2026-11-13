@@ -1518,6 +1518,7 @@ export default function App({ office }: { office: OfficeConfig }) {
                     }
                     className="plan-object room-object"
                   >
+                    <title>{room.name}</title>
                     <rect
                       x={room.x}
                       y={room.y}
