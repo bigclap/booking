@@ -1,18 +1,10 @@
 import type { ReactNode } from 'react';
-import {
-  Building2,
-  CalendarDays,
-  ChevronRight,
-  Grid2X2,
-  Settings2,
-  ShieldCheck,
-  UsersRound,
-} from 'lucide-react';
+import { Building2, Grid2X2, ShieldCheck, UsersRound } from 'lucide-react';
 import type { OfficeConfig } from '../model';
 import { useAuth } from '../auth/AuthProvider';
 import UserMenu from '../auth/UserMenu';
 import { useOffices } from '../offices/OfficeProvider';
-import { officeBookingsPath, officeDetailsPath } from './routes';
+import OfficeWorkspace from './OfficeWorkspace';
 import './users.css';
 import './admin-shell.css';
 
@@ -22,16 +14,29 @@ export default function AdminShell({
   office,
   view,
   overlays,
+  actions,
 }: {
   children: ReactNode;
   section: 'offices' | 'users';
   office?: OfficeConfig;
   view?: 'settings' | 'bookings';
   overlays?: ReactNode;
+  actions?: ReactNode;
 }) {
   const { offices } = useOffices();
   const { users } = useAuth();
   const pageName = section === 'users' ? 'Пользователи' : 'Офисы';
+  if (office)
+    return (
+      <OfficeWorkspace
+        office={office}
+        view={view || 'settings'}
+        overlays={overlays}
+        actions={actions}
+      >
+        {children}
+      </OfficeWorkspace>
+    );
   return (
     <div className="adm-shell admin-area">
       <header className="adm-header">
@@ -92,40 +97,8 @@ export default function AdminShell({
         </aside>
         <main className="adm-main">
           <nav className="admin-content-breadcrumb" aria-label="Путь страницы">
-            {office ? (
-              <>
-                <a href="/admin/offices">Офисы</a>
-                <ChevronRight size={12} />
-                <a href={officeDetailsPath(office.id)}>{office.name}</a>
-                {view === 'bookings' && (
-                  <>
-                    <ChevronRight size={12} />
-                    <span>Бронирования</span>
-                  </>
-                )}
-              </>
-            ) : (
-              <span>{pageName}</span>
-            )}
+            <span>{pageName}</span>
           </nav>
-          {office && (
-            <nav className="admin-office-tabs" aria-label="Разделы офиса">
-              <a
-                href={officeDetailsPath(office.id)}
-                aria-current={view !== 'bookings' ? 'page' : undefined}
-              >
-                <Settings2 size={15} />
-                Настройки офиса
-              </a>
-              <a
-                href={officeBookingsPath(office.id)}
-                aria-current={view === 'bookings' ? 'page' : undefined}
-              >
-                <CalendarDays size={15} />
-                Бронирования
-              </a>
-            </nav>
-          )}
           {children}
         </main>
       </div>

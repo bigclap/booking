@@ -216,7 +216,7 @@ export default function OfficePage({ office }: { office: OfficeConfig }) {
   const enabledDays = DAYS.filter(([day]) => draft.hours[day].enabled).length;
 
   return (
-    <AdminShell section="offices" office={office}>
+    <AdminShell section="offices" office={office} view="settings">
       <section className="adm-content office-detail">
         <div className="adm-page-heading office-detail-heading">
           <div className="office-detail-title">

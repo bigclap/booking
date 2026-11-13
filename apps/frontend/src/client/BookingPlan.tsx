@@ -109,7 +109,9 @@ export default function BookingPlan({
     let previousSize: { width: number; height: number } | null = null;
     const observer = new ResizeObserver(([entry]) => {
       const next = { width: entry.contentRect.width, height: entry.contentRect.height };
-      if (previousSize && previousSize.width > 40 && previousSize.height > 40) {
+      // Hidden or temporarily collapsed viewports must not move the camera.
+      if (next.width <= 40 || next.height <= 40) return;
+      if (previousSize) {
         const dx = (previousSize.width - next.width) / 2,
           dy = (previousSize.height - next.height) / 2;
         setCamera((current) => ({

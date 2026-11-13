@@ -21,6 +21,7 @@ import { getRoomCapacity } from '../model';
 import { useAuth } from '../auth/AuthProvider';
 import type { AppUser } from '../auth/types';
 import BookingTimeline from '../client/BookingTimeline';
+import BookingPlan from '../client/BookingPlan';
 import {
   getMoscowDate,
   getOfficeHours,
@@ -34,6 +35,7 @@ import type { ClientBooking } from '../client/types';
 import BookingDetails from '../client/BookingDetails';
 import { getBookingResourceDetails, isBookingHistorical } from '../client/bookingDetails';
 import AdminShell from './AdminShell';
+import '../client/client.css';
 import './bookings.css';
 
 type Draft = {
@@ -102,10 +104,8 @@ export default function BookingsPage({ office }: { office: OfficeConfig }) {
   const busy = saving || data.saving;
   const step = data.policy?.stepMinutes || 5;
   const formRef = useRef<HTMLElement>(null);
-  const timelineCardRef = useRef<HTMLDivElement>(null);
-  const [maxTimelineHeight, setMaxTimelineHeight] = useState(() =>
-    Math.max(140, window.innerHeight - 450),
-  );
+  const workAreaRef = useRef<HTMLDivElement>(null);
+  const [maxTimelineHeight, setMaxTimelineHeight] = useState(280);
   const submitting = useRef(false);
   const hours = getOfficeHours(office, date);
   const availableOwners = users.filter(
@@ -113,10 +113,8 @@ export default function BookingsPage({ office }: { office: OfficeConfig }) {
       person.active && (person.role === 'admin' || person.buildingIds.includes(office.id)),
   );
   const resources = getResources(floor);
-  const visibleBookings = bookings.filter(
-    (item) => item.floorId === floor.id && item.date === date,
-  );
-  const active = visibleBookings.filter((item) => item.status === 'active');
+  const mapAvailable =
+    data.available && hours.enabled && cursorMinute >= hours.start && cursorMinute < hours.end;
   const cancelled = bookings.filter(
     (item) =>
       item.date === date &&
@@ -154,18 +152,16 @@ export default function BookingsPage({ office }: { office: OfficeConfig }) {
     formResource?.kind === 'room' && Number(draft?.participants) > getRoomCapacity(formResource);
 
   useEffect(() => {
-    const card = timelineCardRef.current;
-    if (!card) return;
-    const main = card.closest<HTMLElement>('.adm-main');
+    const area = workAreaRef.current;
+    if (!area) return;
     const measure = () => {
-      // Use the unscrolled content position: scrolling must not grow the diagram.
-      const contentTop = card.getBoundingClientRect().top + (main?.scrollTop ?? 0);
-      const available = Math.max(140, Math.floor(window.innerHeight - contentTop - 20));
+      if (area.clientHeight <= 0) return;
+      const mapMinimum = area.clientHeight < 340 ? 100 : 160;
+      const available = Math.max(140, Math.floor(area.clientHeight - mapMinimum));
       setMaxTimelineHeight((previous) => (previous === available ? previous : available));
     };
     const observer = new ResizeObserver(measure);
-    observer.observe(card);
-    if (card.parentElement) observer.observe(card.parentElement);
+    observer.observe(area);
     measure();
     window.addEventListener('resize', measure);
     return () => {
@@ -241,6 +237,10 @@ export default function BookingsPage({ office }: { office: OfficeConfig }) {
     setDraft(null);
     setFormError('');
   }
+  function selectResource(id: string) {
+    if (busy || !resources.some((resource) => resource.id === id)) return;
+    setSelectedId(id);
+  }
   function openCreate(resourceId?: string, minute?: number) {
     if (!data.available || busy) return;
     const resource = resources.find((item) => item.id === resourceId) || resources[0];
@@ -315,6 +315,7 @@ export default function BookingsPage({ office }: { office: OfficeConfig }) {
     setSelectedId(booking.resourceId);
     setCursorMinute(booking.start);
     setDraft(null);
+    setHistoryOpen(false);
     setTimelineFocus({ id: booking.id, token: ++timelineFocusSequence.current });
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -482,6 +483,34 @@ export default function BookingsPage({ office }: { office: OfficeConfig }) {
       section="offices"
       office={office}
       view="bookings"
+      actions={
+        <>
+          <button
+            className="bk-my-button ab-records-button"
+            type="button"
+            aria-label="История броней"
+            aria-expanded={historyOpen}
+            aria-controls="ab-office-records"
+            onClick={() => setHistoryOpen((value) => !value)}
+          >
+            <History size={15} />
+            История
+            {retainedBookings.length + cancelled.length > 0 && (
+              <span>{retainedBookings.length + cancelled.length}</span>
+            )}
+          </button>
+          <button
+            className="bk-my-button ab-create-button"
+            type="button"
+            aria-label="Новая бронь"
+            onClick={() => openCreate(selectedId || undefined)}
+            disabled={!resources.length || !data.available || busy}
+          >
+            <Plus size={15} />
+            Новая бронь
+          </button>
+        </>
+      }
       overlays={
         <>
           {notice && (
@@ -771,141 +800,178 @@ export default function BookingsPage({ office }: { office: OfficeConfig }) {
         </>
       }
     >
-      <div className="ab-page">
-        <div className="ab-page-heading">
-          <div>
-            <span className="adm-eyebrow">РАСПИСАНИЕ ОФИСА</span>
-            <h1>Бронирования</h1>
-            <p>Все сотрудники, помещения и рабочие места.</p>
-          </div>
-          <button
-            className="adm-primary"
-            type="button"
-            onClick={() => openCreate()}
-            disabled={!resources.length || !data.available || busy}
-          >
-            <Plus size={16} />
-            Новая бронь
-          </button>
-        </div>
-        <div className="ab-toolbar">
-          <div className="ab-floor-pills" role="group" aria-label="Этаж расписания">
-            {office.floors.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                className={floor.id === item.id ? 'is-active' : ''}
-                aria-pressed={floor.id === item.id}
-                disabled={busy}
-                onClick={() => chooseFloor(item.id)}
-              >
-                {item.name}
-              </button>
-            ))}
-          </div>
-          <div className="ab-summary">
-            <span>
-              <i />
-              {data.available
-                ? `${active.length} ${active.length === 1 ? 'бронь' : 'броней'}`
-                : 'Занятость не загружена'}
-            </span>
-            <span>{readableDate(date)}</span>
-          </div>
-        </div>
-        <p className="ab-drag-hint">
-          Перетаскивайте брони любых сотрудников. Для точного изменения и смены владельца откройте
-          запись.
-        </p>
-        {(pageError || data.error) && (
-          <div className="ab-page-error" role="alert">
-            <AlertCircle size={16} />
-            <span>{pageError || data.error}</span>
-            {data.error ? (
-              <button
-                type="button"
-                onClick={() => void data.refresh()}
-                disabled={data.loading || busy}
-              >
-                <RefreshCw size={15} />
-                Обновить
-              </button>
-            ) : (
-              <button type="button" onClick={() => setPageError('')} aria-label="Закрыть ошибку">
-                <X size={15} />
-              </button>
-            )}
-          </div>
-        )}
-        <div className="ab-timeline-card" ref={timelineCardRef}>
-          {data.available ? (
-            <BookingTimeline
-              currentUserId={user?.id || ''}
-              canManageAll
-              focusBooking={timelineFocus}
-              onFocusConsumed={consumeTimelineFocus}
-              bookingEditMode={() => (data.available && !busy ? 'all' : 'none')}
-              initialHeight={Math.max(140, window.innerHeight - 450)}
-              maxPanelHeight={maxTimelineHeight}
+      <div className="ab-page ab-office-workspace">
+        <div className="ab-work-area" ref={workAreaRef}>
+          <div className="ab-map-stage">
+            <BookingPlan
               floor={floor}
               bookings={bookings}
               date={date}
-              range={{ start: hours.start, end: hours.end }}
-              dateControl={dateControl}
-              hours={hours}
+              start={cursorMinute}
+              end={Math.min(1440, cursorMinute + 1)}
               cursorMinute={cursorMinute}
               selectedId={selectedId}
-              onSelect={setSelectedId}
-              onRangeChange={() => undefined}
-              onCursorChange={setCursorMinute}
-              onBookingClick={openBooking}
-              onBookingChange={changeBooking}
-              onCreate={openCreate}
+              filter="all"
+              onSelect={selectResource}
+              disabled={!mapAvailable}
+              viewMode="moment"
             />
-          ) : (
-            <div className="ab-availability-state" role="status">
-              {data.loading ? (
-                <LoaderCircle size={24} className="auth-spinner" />
-              ) : (
-                <AlertCircle size={24} />
-              )}
-              <h2>{data.loading ? 'Загружаем расписание' : 'Занятость недоступна'}</h2>
-              <p>
-                {data.loading
-                  ? 'Получаем брони выбранного офиса.'
-                  : 'Пока данные не загружены, доступность мест неизвестна.'}
-              </p>
-              {!data.loading && (
-                <button type="button" className="adm-secondary" onClick={() => void data.refresh()}>
-                  <RefreshCw size={15} />
-                  Попробовать снова
+            <div
+              className="bk-floor-switcher ab-floor-switcher"
+              role="group"
+              aria-label="Этаж расписания"
+            >
+              <small>ЭТАЖ</small>
+              {office.floors.map((item, index) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-label={'Показать ' + item.name}
+                  title={item.name}
+                  aria-pressed={floor.id === item.id}
+                  className={floor.id === item.id ? 'is-active' : ''}
+                  disabled={busy}
+                  onClick={() => chooseFloor(item.id)}
+                >
+                  {item.name.match(/^-?\d+/)?.[0] || index + 1}
                 </button>
-              )}
+              ))}
             </div>
-          )}
+            {(pageError || data.error) && (
+              <div className="ab-page-error ab-map-error" role="alert">
+                <AlertCircle size={16} />
+                <span>{pageError || data.error}</span>
+                {data.error ? (
+                  <button
+                    type="button"
+                    onClick={() => void data.refresh()}
+                    disabled={data.loading || busy}
+                  >
+                    <RefreshCw size={15} />
+                    Обновить
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setPageError('')}
+                    aria-label="Закрыть ошибку"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
+            )}
+            {!hours.enabled && !pageError && !data.error && (
+              <div className="ab-map-notice">
+                <Clock3 size={14} />В этот день офис закрыт
+              </div>
+            )}
+            {resources.length === 0 && (
+              <div className="ab-map-empty">На этом этаже пока нет помещений и рабочих мест</div>
+            )}
+            {historyOpen && (
+              <section
+                className="ab-records-panel"
+                id="ab-office-records"
+                aria-label="История и сохранённые записи"
+              >
+                <div className="ab-records-heading">
+                  <h2>Записи · {readableDate(date)}</h2>
+                  <button
+                    type="button"
+                    aria-label="Закрыть историю броней"
+                    onClick={() => setHistoryOpen(false)}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="ab-records-body">
+                  {!data.available ? (
+                    <p className="ab-records-empty">
+                      {data.loading ? 'Загружаем записи…' : 'Не удалось загрузить записи'}
+                    </p>
+                  ) : (
+                    <>
+                      {retainedBookings.length > 0 && (
+                        <section
+                          className="ab-review-records"
+                          aria-label="Брони, требующие внимания"
+                        >
+                          <h3>Требуют внимания</h3>
+                          <div>{retainedBookings.map(savedRecord)}</div>
+                        </section>
+                      )}
+                      {cancelled.length > 0 && (
+                        <details className="ab-cancelled" open>
+                          <summary>
+                            <History size={14} />
+                            Отменённые записи<span>{cancelled.length}</span>
+                          </summary>
+                          <div className="ab-history-records">{cancelled.map(savedRecord)}</div>
+                        </details>
+                      )}
+                      {retainedBookings.length === 0 && cancelled.length === 0 && (
+                        <p className="ab-records-empty">
+                          Сохранённых записей для этого этажа и даты нет
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              </section>
+            )}
+          </div>
+          <div className="ab-timeline-card">
+            {data.available ? (
+              <BookingTimeline
+                currentUserId={user?.id || ''}
+                canManageAll
+                focusBooking={timelineFocus}
+                onFocusConsumed={consumeTimelineFocus}
+                bookingEditMode={() => (data.available && !busy ? 'all' : 'none')}
+                initialHeight={205}
+                maxPanelHeight={maxTimelineHeight}
+                floor={floor}
+                bookings={bookings}
+                date={date}
+                range={{ start: hours.start, end: hours.end }}
+                dateControl={dateControl}
+                hours={hours}
+                cursorMinute={cursorMinute}
+                selectedId={selectedId}
+                onSelect={selectResource}
+                onRoomSelect={selectResource}
+                onRangeChange={() => undefined}
+                onCursorChange={setCursorMinute}
+                onBookingClick={openBooking}
+                onBookingChange={changeBooking}
+                onCreate={openCreate}
+              />
+            ) : (
+              <div className="ab-availability-state ab-workspace-unavailable" role="status">
+                <div>
+                  {data.loading ? (
+                    <LoaderCircle size={19} className="auth-spinner" />
+                  ) : (
+                    <AlertCircle size={19} />
+                  )}
+                  <span>{data.loading ? 'Загружаем расписание' : 'Занятость недоступна'}</span>
+                  {!data.loading && (
+                    <button
+                      type="button"
+                      className="adm-secondary"
+                      onClick={() => void data.refresh()}
+                    >
+                      <RefreshCw size={14} />
+                      Обновить
+                    </button>
+                  )}
+                </div>
+                <div className="ab-unavailable-date">{dateControl}</div>
+              </div>
+            )}
+          </div>
         </div>
-        {data.available && retainedBookings.length > 0 && (
-          <section className="ab-review-records" aria-label="Брони, требующие внимания">
-            <h2>Сохранённые записи и изменения условий</h2>
-            <div>{retainedBookings.map(savedRecord)}</div>
-          </section>
-        )}
-        {data.available && cancelled.length > 0 && (
-          <details
-            className="ab-cancelled"
-            open={historyOpen}
-            onToggle={(event) => setHistoryOpen(event.currentTarget.open)}
-          >
-            <summary>
-              <History size={14} />
-              Отменённые записи<span>{cancelled.length}</span>
-            </summary>
-            <div className="ab-history-records">{cancelled.map(savedRecord)}</div>
-          </details>
-        )}
-        <p className="ab-local-note">
-          История бронирований сохраняется, включая отменённые записи.
-        </p>
       </div>
     </AdminShell>
   );

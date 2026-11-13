@@ -31,6 +31,7 @@ export interface BookingTimelineProps {
   cursorMinute: number;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onRoomSelect?: (id: string) => void;
   onRangeChange: (range: TimeRange) => void;
   onCursorChange: (minute: number) => void;
   onBookingClick: (booking: ClientBooking) => void;
@@ -76,6 +77,7 @@ export default function BookingTimeline({
   cursorMinute,
   selectedId,
   onSelect,
+  onRoomSelect,
   onCursorChange,
   onBookingClick,
   onBookingChange,
@@ -800,6 +802,7 @@ export default function BookingTimeline({
               aria-expanded={isOpen}
               onClick={(event) => {
                 event.stopPropagation();
+                if (room) onRoomSelect?.(room.id);
                 toggle(id);
               }}
             >

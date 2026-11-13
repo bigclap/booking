@@ -5,7 +5,7 @@ import { useOffices } from '../offices/OfficeProvider';
 import { CreateOfficeDialog } from '../offices/OfficeSwitcher';
 import { getResources } from '../client/bookingModel';
 import LegacyOfficeImport from '../offices/LegacyOfficeImport';
-import { officeDetailsPath } from './routes';
+import { officePath } from './routes';
 import '../offices/offices.css';
 
 export default function OfficesPage() {
@@ -27,7 +27,7 @@ export default function OfficesPage() {
         create && (
           <CreateOfficeDialog
             onClose={() => setCreate(false)}
-            onCreated={(office) => window.location.assign(officeDetailsPath(office.id))}
+            onCreated={(office) => window.location.assign(officePath(office.id))}
           />
         )
       }
@@ -76,7 +76,7 @@ export default function OfficesPage() {
                   </span>
                 </div>
                 <h2>
-                  <a href={officeDetailsPath(item.id)}>{item.name}</a>
+                  <a href={officePath(item.id)}>{item.name}</a>
                 </h2>
                 <div className="office-card-address">
                   <MapPin size={13} />
@@ -98,7 +98,7 @@ export default function OfficesPage() {
                   </span>
                 </div>
                 <div className="office-card-actions">
-                  <a className="office-open-link" href={officeDetailsPath(item.id)}>
+                  <a className="office-open-link" href={officePath(item.id)}>
                     Открыть офис
                     <ArrowUpRight size={14} />
                   </a>

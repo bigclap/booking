@@ -2,16 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import {
   Armchair,
-  ArrowLeft,
   Check,
-  ChevronRight,
   Copy,
   Eye,
   Grid2X2,
   Hand,
   HelpCircle,
   ImagePlus,
-  Layers,
   LockKeyhole,
   Magnet,
   Maximize,
@@ -36,8 +33,7 @@ import type { CatalogCategory } from './catalog';
 import { createBlankFloor, getRoomCapacity, parseConfig, uid } from './model';
 import type { Floor, OfficeConfig, PlanElement } from './model';
 import Inspector from './Inspector';
-import UserMenu from './auth/UserMenu';
-import { officeDetailsPath } from './admin/routes';
+import OfficeWorkspace from './admin/OfficeWorkspace';
 import { useOffices } from './offices/OfficeProvider';
 import { useAuth } from './auth/AuthProvider';
 import { ApiError } from './api/client';
@@ -1057,68 +1053,11 @@ export default function App({ office }: { office: OfficeConfig }) {
   void historyTick;
 
   return (
-    <div className={'app-shell admin-plan-shell' + (preview ? ' is-preview' : '')}>
-      {(recovery || saveError || draftWarning) && (
-        <div className="recovery-banner" role="alert" style={{ flexWrap: 'wrap', gap: '8px 18px' }}>
-          {recovery ? (
-            <>
-              <span>
-                {recovery.error ||
-                  (recovery.draft?.baseRevision !== undefined &&
-                  recovery.draft.baseRevision !== office.revision
-                    ? 'Серверный план изменился после создания черновика. Восстановление заменит его этажи локальной версией — сначала сравните планы.'
-                    : 'Есть несохранённый локальный черновик этого плана. Восстановить его поверх серверной версии?')}
-              </span>
-              {recovery.draft && (
-                <button onClick={() => resolveRecovery(true)}>Восстановить черновик</button>
-              )}
-              <button onClick={() => resolveRecovery(false)}>Отбросить черновик</button>
-            </>
-          ) : (
-            <>
-              {saveError && <span>{saveError}</span>}
-              {draftWarning && <span>{draftWarning}</span>}
-              {saveError &&
-                (saveConflict ? (
-                  <button onClick={() => window.location.reload()}>Открыть актуальный план</button>
-                ) : (
-                  <button onClick={() => setSaveTick((value) => value + 1)}>
-                    Повторить сохранение
-                  </button>
-                ))}
-            </>
-          )}
-          {saveError && recovery && <span>{saveError}</span>}
-        </div>
-      )}
-      <header className="app-header plan-admin-header">
-        <a
-          className="brand plan-admin-brand"
-          href="/admin/offices"
-          aria-label="Администрирование — Офисы"
-        >
-          <span className="brand-mark">
-            <Grid2X2 size={22} />
-          </span>
-          <span className="plan-admin-brand-copy">
-            <b>планировка</b>
-            <small>Администрирование</small>
-          </span>
-        </a>
-        <nav className="plan-admin-breadcrumbs" aria-label="Путь в администрировании">
-          <a href="/admin/offices">Офисы</a>
-          <ChevronRight size={13} />
-          <a
-            className="plan-admin-office-name"
-            href={officeDetailsPath(office.id)}
-            title={office.name}
-          >
-            {office.name}
-          </a>
-          <ChevronRight size={13} />
-          <strong aria-current="page">План</strong>
-        </nav>
-        <div className="header-actions plan-admin-actions">
+    <OfficeWorkspace
+      office={office}
+      view="plan"
+      actions={
+        <>
           <span role="status" className={'save-state' + (saveError ? ' save-error' : '')}>
             <Check size={14} />
             {saveState}
@@ -1135,1039 +1074,1065 @@ export default function App({ office }: { office: OfficeConfig }) {
             <Eye size={15} />
             {preview ? 'К редактированию' : 'Предпросмотр'}
           </button>
-          <UserMenu area="admin" />
-        </div>
-      </header>
-      <div className="workspace" inert={!!recovery}>
-        <nav className="nav-rail">
-          <a
-            className="rail-link"
-            title="К деталям офиса"
-            aria-label={`Вернуться к офису ${office.name}`}
-            href={officeDetailsPath(office.id)}
+        </>
+      }
+    >
+      <div className={'app-shell admin-plan-shell' + (preview ? ' is-preview' : '')}>
+        {(recovery || saveError || draftWarning) && (
+          <div
+            className="recovery-banner"
+            role="alert"
+            style={{ flexWrap: 'wrap', gap: '8px 18px' }}
           >
-            <ArrowLeft />
-          </a>
-          <button
-            className="rail-active"
-            title="Конструктор"
-            aria-label="Конструктор плана"
-            onClick={() => {
-              setPreview(false);
-              setTab('catalog');
-            }}
-          >
-            <Layers />
-          </button>
-          <button
-            className="rail-bottom"
-            title="Горячие клавиши"
-            aria-label="Горячие клавиши"
-            onClick={() => setHelp(true)}
-          >
-            <HelpCircle size={17} />
-          </button>
-        </nav>
-        <aside className="library-panel">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">ПРОСТРАНСТВО</span>
-              <h1>Конструктор</h1>
-            </div>
+            {recovery ? (
+              <>
+                <span>
+                  {recovery.error ||
+                    (recovery.draft?.baseRevision !== undefined &&
+                    recovery.draft.baseRevision !== office.revision
+                      ? 'Серверный план изменился после создания черновика. Восстановление заменит его этажи локальной версией — сначала сравните планы.'
+                      : 'Есть несохранённый локальный черновик этого плана. Восстановить его поверх серверной версии?')}
+                </span>
+                {recovery.draft && (
+                  <button onClick={() => resolveRecovery(true)}>Восстановить черновик</button>
+                )}
+                <button onClick={() => resolveRecovery(false)}>Отбросить черновик</button>
+              </>
+            ) : (
+              <>
+                {saveError && <span>{saveError}</span>}
+                {draftWarning && <span>{draftWarning}</span>}
+                {saveError &&
+                  (saveConflict ? (
+                    <button onClick={() => window.location.reload()}>
+                      Открыть актуальный план
+                    </button>
+                  ) : (
+                    <button onClick={() => setSaveTick((value) => value + 1)}>
+                      Повторить сохранение
+                    </button>
+                  ))}
+              </>
+            )}
+            {saveError && recovery && <span>{saveError}</span>}
           </div>
-          <div className="office-caption">
-            <Building2 size={14} />
-            <span>{office.name}</span>
-          </div>
-          <div className="library-tabs">
-            <button className={tab === 'catalog' ? 'active' : ''} onClick={() => setTab('catalog')}>
-              Каталог
-            </button>
-            <button className={tab === 'layers' ? 'active' : ''} onClick={() => setTab('layers')}>
-              Объекты <span>{floor.elements.length}</span>
-            </button>
-          </div>
-          <label className="library-search">
-            <Search size={14} />
-            <input
-              ref={searchRef}
-              aria-label="Поиск объектов"
-              placeholder="Найти объект…"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-            <kbd>⌘ K</kbd>
-          </label>
-          {tab === 'catalog' ? (
-            <>
-              <div className="section-title">СОЗДАТЬ НА ПЛАНЕ</div>
-              <div className="draft-tools">
-                <button
-                  className={tool === 'wall' ? 'active' : ''}
-                  onClick={() => {
-                    setPreview(false);
-                    setTool('wall');
-                  }}
-                >
-                  <BrickWall size={20} />
-                  <span>Стена</span>
-                  <kbd>W</kbd>
-                </button>
-                <button
-                  className={tool === 'room' ? 'active' : ''}
-                  onClick={() => {
-                    setPreview(false);
-                    setSelectedId(null);
-                    setTool('room');
-                  }}
-                >
-                  <SquareDashed size={20} />
-                  <span>Помещение</span>
-                  <kbd>R</kbd>
-                </button>
+        )}
+        <div className="workspace" inert={!!recovery}>
+          <aside className="library-panel">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">ПРОСТРАНСТВО</span>
+                <h1>Конструктор</h1>
               </div>
-              <div className="section-title">
-                МЕБЕЛЬ И ОСНАЩЕНИЕ <span>{CATALOG.length}</span>
-              </div>
-              <div className="category-chips">
-                <button
-                  className={category === 'all' ? 'active' : ''}
-                  onClick={() => setCategory('all')}
-                >
-                  Всё
-                </button>
-                {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
-                  <button
-                    key={key}
-                    className={category === key ? 'active' : ''}
-                    onClick={() => setCategory(key as CatalogCategory)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div className="asset-grid">
-                {filtered.map((item) => (
-                  <button
-                    key={item.type}
-                    className={'asset-card' + (tool === 'asset:' + item.type ? ' active' : '')}
-                    title={'Разместить: ' + item.name}
-                    draggable
-                    onDragStart={(event) => {
-                      event.dataTransfer.setData('application/x-office-asset', item.type);
-                      event.dataTransfer.effectAllowed = 'copy';
-                    }}
-                    onClick={() => {
-                      setPreview(false);
-                      setTool('asset:' + item.type);
-                    }}
-                  >
-                    <div className="asset-picture">
-                      <img src={item.asset} alt="" draggable={false} />
-                      {item.seats > 1 && <small>{item.seats} места</small>}
-                    </div>
-                    <span>{item.name}</span>
-                  </button>
-                ))}
-              </div>
-              {!filtered.length && (
-                <div className="catalog-empty">
-                  <Search size={22} />
-                  <p>Такого объекта пока нет</p>
-                  <button
-                    onClick={() => {
-                      setSearch('');
-                      setCategory('all');
-                    }}
-                  >
-                    Сбросить поиск
-                  </button>
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="object-list">
-              {list.map((item) => (
-                <button
-                  key={item.id}
-                  className={'object-row' + (selectedId === item.id ? ' active' : '')}
-                  onClick={() => {
-                    setSelectedId(item.id);
-                    setTool('select');
-                    setPreview(false);
-                  }}
-                >
-                  <span>
-                    {item.kind === 'room' ? (
-                      <SquareDashed size={16} />
-                    ) : item.kind === 'wall' ? (
-                      <BrickWall size={16} />
-                    ) : (
-                      <Armchair size={16} />
-                    )}
-                  </span>
-                  <div>
-                    <b>{item.name}</b>
-                    <small>
-                      {item.kind === 'room'
-                        ? 'Помещение'
-                        : item.kind === 'desk'
-                          ? 'Рабочее место'
-                          : item.kind === 'wall'
-                            ? 'Стена'
-                            : 'Оснащение'}
-                    </small>
-                  </div>
-                  {item.locked && <LockKeyhole size={12} />}
-                </button>
-              ))}
-            </div>
-          )}
-          <button className="underlay-shortcut" onClick={() => setUnderlayOpen(true)}>
-            <ImagePlus size={16} />
-            <span>
-              Подложка плана
-              <small>{floor.background ? floor.background.name : 'Загрузить изображение'}</small>
-            </span>
-            <Settings2 size={14} />
-          </button>
-        </aside>
-        <main className="canvas-area">
-          <div className="canvas-heading">
-            <div>
-              <h2>
-                {floor.name}
-                <span>{preview ? 'Предпросмотр' : 'Редактирование плана'}</span>
-              </h2>
-              <p>
-                {roomCount} помещения <i>·</i> {deskCount} рабочих мест <i>·</i>{' '}
-                {floor.elements.length} объектов
-              </p>
-            </div>
-            <div className="canvas-heading-actions">
               <button
                 className="icon-button"
-                title="Настройки этажа"
-                onClick={() => setSettings(true)}
+                title="Горячие клавиши"
+                aria-label="Горячие клавиши"
+                onClick={() => setHelp(true)}
               >
-                <Settings2 size={16} />
-              </button>
-              <button
-                className={'secondary-button' + (underlayOpen ? ' active' : '')}
-                aria-expanded={underlayOpen}
-                onClick={() => setUnderlayOpen(!underlayOpen)}
-              >
-                <ImagePlus size={15} />
-                Подложка
+                <HelpCircle size={16} />
               </button>
             </div>
-          </div>
-          {underlayOpen && (
-            <UnderlayPanel
-              key={floor.id}
-              floor={floor}
-              onChange={(patch) => {
-                if (patch.visible === false) setUnderlayEditing(false);
-                changeFloor((current) =>
-                  current.background
-                    ? { ...current, background: { ...current.background, ...patch } }
-                    : current,
-                );
-              }}
-              onUpload={() => uploadRef.current?.click()}
-              onRemove={() => {
-                setUnderlayEditing(false);
-                changeFloor((current) => ({ ...current, background: undefined }));
-              }}
-              onClose={() => setUnderlayOpen(false)}
-              onEdit={() => {
-                setTool('select');
-                setSelectedId(null);
-                setPreview(false);
-                setUnderlayEditing(true);
-                setGrid(true);
-                setUnderlayOpen(false);
-              }}
-            />
-          )}
-          <div
-            className={
-              'editor-viewport ' +
-              (tool === 'pan' || spacePressed
-                ? 'cursor-pan'
-                : tool === 'select'
-                  ? ''
-                  : 'cursor-place')
-            }
-            ref={viewportRef}
-          >
-            <div className="floor-switcher" role="group" aria-label="Этажи">
-              <div className="floor-switcher-label">ЭТАЖ</div>
-              <div className="floor-buttons">
-                {config.floors.map((item, index) => (
+            <div className="office-caption">
+              <Building2 size={14} />
+              <span>{office.name}</span>
+            </div>
+            <div className="library-tabs">
+              <button
+                className={tab === 'catalog' ? 'active' : ''}
+                onClick={() => setTab('catalog')}
+              >
+                Каталог
+              </button>
+              <button className={tab === 'layers' ? 'active' : ''} onClick={() => setTab('layers')}>
+                Объекты <span>{floor.elements.length}</span>
+              </button>
+            </div>
+            <label className="library-search">
+              <Search size={14} />
+              <input
+                ref={searchRef}
+                aria-label="Поиск объектов"
+                placeholder="Найти объект…"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <kbd>⌘ K</kbd>
+            </label>
+            {tab === 'catalog' ? (
+              <>
+                <div className="section-title">СОЗДАТЬ НА ПЛАНЕ</div>
+                <div className="draft-tools">
+                  <button
+                    className={tool === 'wall' ? 'active' : ''}
+                    onClick={() => {
+                      setPreview(false);
+                      setTool('wall');
+                    }}
+                  >
+                    <BrickWall size={20} />
+                    <span>Стена</span>
+                    <kbd>W</kbd>
+                  </button>
+                  <button
+                    className={tool === 'room' ? 'active' : ''}
+                    onClick={() => {
+                      setPreview(false);
+                      setSelectedId(null);
+                      setTool('room');
+                    }}
+                  >
+                    <SquareDashed size={20} />
+                    <span>Помещение</span>
+                    <kbd>R</kbd>
+                  </button>
+                </div>
+                <div className="section-title">
+                  МЕБЕЛЬ И ОСНАЩЕНИЕ <span>{CATALOG.length}</span>
+                </div>
+                <div className="category-chips">
+                  <button
+                    className={category === 'all' ? 'active' : ''}
+                    onClick={() => setCategory('all')}
+                  >
+                    Всё
+                  </button>
+                  {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
+                    <button
+                      key={key}
+                      className={category === key ? 'active' : ''}
+                      onClick={() => setCategory(key as CatalogCategory)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="asset-grid">
+                  {filtered.map((item) => (
+                    <button
+                      key={item.type}
+                      className={'asset-card' + (tool === 'asset:' + item.type ? ' active' : '')}
+                      title={'Разместить: ' + item.name}
+                      draggable
+                      onDragStart={(event) => {
+                        event.dataTransfer.setData('application/x-office-asset', item.type);
+                        event.dataTransfer.effectAllowed = 'copy';
+                      }}
+                      onClick={() => {
+                        setPreview(false);
+                        setTool('asset:' + item.type);
+                      }}
+                    >
+                      <div className="asset-picture">
+                        <img src={item.asset} alt="" draggable={false} />
+                        {item.seats > 1 && <small>{item.seats} места</small>}
+                      </div>
+                      <span>{item.name}</span>
+                    </button>
+                  ))}
+                </div>
+                {!filtered.length && (
+                  <div className="catalog-empty">
+                    <Search size={22} />
+                    <p>Такого объекта пока нет</p>
+                    <button
+                      onClick={() => {
+                        setSearch('');
+                        setCategory('all');
+                      }}
+                    >
+                      Сбросить поиск
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="object-list">
+                {list.map((item) => (
                   <button
                     key={item.id}
-                    type="button"
-                    className={'floor-button' + (item.id === floor.id ? ' is-active' : '')}
-                    title={item.name}
-                    aria-label={'Перейти на ' + item.name}
-                    aria-pressed={item.id === floor.id}
-                    onClick={() => selectFloor(item.id)}
+                    className={'object-row' + (selectedId === item.id ? ' active' : '')}
+                    onClick={() => {
+                      setSelectedId(item.id);
+                      setTool('select');
+                      setPreview(false);
+                    }}
                   >
-                    {item.name.match(/^-?\d+/)?.[0] || index + 1}
+                    <span>
+                      {item.kind === 'room' ? (
+                        <SquareDashed size={16} />
+                      ) : item.kind === 'wall' ? (
+                        <BrickWall size={16} />
+                      ) : (
+                        <Armchair size={16} />
+                      )}
+                    </span>
+                    <div>
+                      <b>{item.name}</b>
+                      <small>
+                        {item.kind === 'room'
+                          ? 'Помещение'
+                          : item.kind === 'desk'
+                            ? 'Рабочее место'
+                            : item.kind === 'wall'
+                              ? 'Стена'
+                              : 'Оснащение'}
+                      </small>
+                    </div>
+                    {item.locked && <LockKeyhole size={12} />}
                   </button>
                 ))}
               </div>
-              <button
-                type="button"
-                className="floor-add"
-                title={config.floors.length >= 40 ? 'Добавлено 40 этажей' : 'Добавить этаж'}
-                aria-label="Добавить этаж"
-                disabled={config.floors.length >= 40}
-                onClick={addFloor}
-              >
-                <Plus size={17} />
-              </button>
+            )}
+            <button className="underlay-shortcut" onClick={() => setUnderlayOpen(true)}>
+              <ImagePlus size={16} />
+              <span>
+                Подложка плана
+                <small>{floor.background ? floor.background.name : 'Загрузить изображение'}</small>
+              </span>
+              <Settings2 size={14} />
+            </button>
+          </aside>
+          <main className="canvas-area">
+            <div className="canvas-heading">
+              <div>
+                <h2>
+                  {floor.name}
+                  <span>{preview ? 'Предпросмотр' : 'Редактирование плана'}</span>
+                </h2>
+                <p>
+                  {roomCount} помещения <i>·</i> {deskCount} рабочих мест <i>·</i>{' '}
+                  {floor.elements.length} объектов
+                </p>
+              </div>
+              <div className="canvas-heading-actions">
+                <button
+                  className="icon-button"
+                  title="Настройки этажа"
+                  onClick={() => setSettings(true)}
+                >
+                  <Settings2 size={16} />
+                </button>
+                <button
+                  className={'secondary-button' + (underlayOpen ? ' active' : '')}
+                  aria-expanded={underlayOpen}
+                  onClick={() => setUnderlayOpen(!underlayOpen)}
+                >
+                  <ImagePlus size={15} />
+                  Подложка
+                </button>
+              </div>
             </div>
-            <svg
-              ref={svgRef}
-              className="editor-svg"
-              aria-label="План офиса"
-              viewBox={[
-                camera.x,
-                camera.y,
-                size.width / camera.zoom,
-                size.height / camera.zoom,
-              ].join(' ')}
-              onPointerDown={startPointer}
-              onPointerMove={movePointer}
-              onPointerUp={finishPointer}
-              onPointerCancel={() => {
-                if (dragRef.current) setConfig(dragRef.current.before);
-                dragRef.current = null;
-                setGhost(null);
-              }}
-              onPointerLeave={() => setCursor(null)}
-              onContextMenu={(event) => event.preventDefault()}
-              onDragOver={(event) => {
-                event.preventDefault();
-                event.dataTransfer.dropEffect = 'copy';
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                const type = event.dataTransfer.getData('application/x-office-asset');
-                if (type) insertAsset(type, pointFrom(event.clientX, event.clientY));
-              }}
+            {underlayOpen && (
+              <UnderlayPanel
+                key={floor.id}
+                floor={floor}
+                onChange={(patch) => {
+                  if (patch.visible === false) setUnderlayEditing(false);
+                  changeFloor((current) =>
+                    current.background
+                      ? { ...current, background: { ...current.background, ...patch } }
+                      : current,
+                  );
+                }}
+                onUpload={() => uploadRef.current?.click()}
+                onRemove={() => {
+                  setUnderlayEditing(false);
+                  changeFloor((current) => ({ ...current, background: undefined }));
+                }}
+                onClose={() => setUnderlayOpen(false)}
+                onEdit={() => {
+                  setTool('select');
+                  setSelectedId(null);
+                  setPreview(false);
+                  setUnderlayEditing(true);
+                  setGrid(true);
+                  setUnderlayOpen(false);
+                }}
+              />
+            )}
+            <div
+              className={
+                'editor-viewport ' +
+                (tool === 'pan' || spacePressed
+                  ? 'cursor-pan'
+                  : tool === 'select'
+                    ? ''
+                    : 'cursor-place')
+              }
+              ref={viewportRef}
             >
-              <defs>
-                <filter id="floor-shadow" x="-15%" y="-15%" width="130%" height="140%">
-                  <feDropShadow
-                    dx="0"
-                    dy="14"
-                    stdDeviation="24"
-                    floodColor="#6c80a0"
-                    floodOpacity=".13"
-                  />
-                </filter>
-              </defs>
-              <rect
-                x={camera.x}
-                y={camera.y}
-                width={size.width / camera.zoom}
-                height={size.height / camera.zoom}
-                fill="#f4f6fb"
-              />
-              <rect
-                x="0"
-                y="0"
-                width={floor.width}
-                height={floor.height}
-                rx="3"
-                fill="#fff"
-                filter="url(#floor-shadow)"
-              />
-              {floor.background?.visible && (
-                <image
-                  className="plan-underlay"
-                  href={floor.background.src}
-                  x={underlay.x}
-                  y={underlay.y}
-                  width={underlay.width}
-                  height={underlay.height}
-                  preserveAspectRatio="xMidYMid meet"
-                  opacity={floor.background.opacity}
-                  pointerEvents="none"
-                />
-              )}
-              {floor.elements
-                .filter((item) => item.kind === 'room')
-                .map((room) => (
-                  <g
-                    key={room.id}
-                    data-element-id={room.id}
-                    role="button"
-                    aria-label={room.name}
-                    transform={
-                      'rotate(' +
-                      room.rotation +
-                      ' ' +
-                      (room.x + room.width / 2) +
-                      ' ' +
-                      (room.y + room.height / 2) +
-                      ')'
-                    }
-                    className="plan-object room-object"
-                  >
-                    <title>{room.name}</title>
-                    <rect
-                      x={room.x}
-                      y={room.y}
-                      width={room.width}
-                      height={room.height}
-                      fill={room.color}
-                      fillOpacity={floor.background?.visible ? 0.45 : 0.8}
-                    />
-                  </g>
-                ))}
-              <g
-                fill="none"
-                stroke="#536174"
-                strokeWidth={WALL_THICKNESS}
-                strokeLinecap="butt"
-                strokeLinejoin="round"
-                pointerEvents="none"
+              <div className="floor-switcher" role="group" aria-label="Этажи">
+                <div className="floor-switcher-label">ЭТАЖ</div>
+                <div className="floor-buttons">
+                  {config.floors.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={'floor-button' + (item.id === floor.id ? ' is-active' : '')}
+                      title={item.name}
+                      aria-label={'Перейти на ' + item.name}
+                      aria-pressed={item.id === floor.id}
+                      onClick={() => selectFloor(item.id)}
+                    >
+                      {item.name.match(/^-?\d+/)?.[0] || index + 1}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="floor-add"
+                  title={config.floors.length >= 40 ? 'Добавлено 40 этажей' : 'Добавить этаж'}
+                  aria-label="Добавить этаж"
+                  disabled={config.floors.length >= 40}
+                  onClick={addFloor}
+                >
+                  <Plus size={17} />
+                </button>
+              </div>
+              <svg
+                ref={svgRef}
+                className="editor-svg"
+                aria-label="План офиса"
+                viewBox={[
+                  camera.x,
+                  camera.y,
+                  size.width / camera.zoom,
+                  size.height / camera.zoom,
+                ].join(' ')}
+                onPointerDown={startPointer}
+                onPointerMove={movePointer}
+                onPointerUp={finishPointer}
+                onPointerCancel={() => {
+                  if (dragRef.current) setConfig(dragRef.current.before);
+                  dragRef.current = null;
+                  setGhost(null);
+                }}
+                onPointerLeave={() => setCursor(null)}
+                onContextMenu={(event) => event.preventDefault()}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'copy';
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const type = event.dataTransfer.getData('application/x-office-asset');
+                  if (type) insertAsset(type, pointFrom(event.clientX, event.clientY));
+                }}
               >
-                {walls.map((wall, index) => (
-                  <path
-                    key={index}
-                    d={'M' + wall.x1 + ' ' + wall.y1 + 'L' + wall.x2 + ' ' + wall.y2}
-                  />
-                ))}
-              </g>
-              {floor.elements
-                .filter((item) => item.kind === 'wall')
-                .map((item) => {
-                  const [start, end] = getWallEndpoints(item);
-                  return (
-                    <g
-                      key={item.id}
-                      data-element-id={item.id}
-                      role="button"
-                      aria-label={item.name}
-                      className="wall-hit"
-                    >
-                      <path
-                        d={'M' + start.x + ' ' + start.y + 'L' + end.x + ' ' + end.y}
-                        stroke="transparent"
-                        strokeWidth={Math.max(WALL_THICKNESS, 14 / camera.zoom)}
-                        fill="none"
-                        pointerEvents="stroke"
-                      />
-                    </g>
-                  );
-                })}
-              {floor.elements
-                .filter((item) => item.kind === 'desk' || item.kind === 'furniture')
-                .map((item) => {
-                  const asset = getCatalogItem(item.type);
-                  return (
-                    <g
-                      key={item.id}
-                      data-element-id={item.id}
-                      role="button"
-                      aria-label={item.name}
-                      transform={
-                        'rotate(' +
-                        item.rotation +
-                        ' ' +
-                        (item.x + item.width / 2) +
-                        ' ' +
-                        (item.y + item.height / 2) +
-                        ')'
-                      }
-                      className={'plan-object ' + (item.locked ? 'object-locked' : '')}
-                    >
-                      <title>{item.name}</title>
-                      {asset ? (
-                        <image
-                          href={asset.asset}
-                          x={item.x}
-                          y={item.y}
-                          width={item.width}
-                          height={item.height}
-                          preserveAspectRatio="none"
-                          pointerEvents="none"
-                        />
-                      ) : (
-                        <rect
-                          x={item.x}
-                          y={item.y}
-                          width={item.width}
-                          height={item.height}
-                          fill="#d5ddeb"
-                          rx="8"
-                        />
-                      )}
-                      <rect
-                        x={item.x}
-                        y={item.y}
-                        width={item.width}
-                        height={item.height}
-                        fill="transparent"
-                      />
-                      {item.kind === 'desk' && item.bookable && (
-                        <circle
-                          cx={item.x + item.width - 5}
-                          cy={item.y + 4}
-                          r="6"
-                          fill="#7398e7"
-                          stroke="white"
-                          strokeWidth="2"
-                          pointerEvents="none"
-                        />
-                      )}
-                    </g>
-                  );
-                })}
-              {grid && !preview && (
-                <CanvasGrid
+                <defs>
+                  <filter id="floor-shadow" x="-15%" y="-15%" width="130%" height="140%">
+                    <feDropShadow
+                      dx="0"
+                      dy="14"
+                      stdDeviation="24"
+                      floodColor="#6c80a0"
+                      floodOpacity=".13"
+                    />
+                  </filter>
+                </defs>
+                <rect
                   x={camera.x}
                   y={camera.y}
                   width={size.width / camera.zoom}
                   height={size.height / camera.zoom}
-                  zoom={camera.zoom}
-                  step={gridStep}
-                  editing={underlayEditing}
+                  fill="#f4f6fb"
                 />
-              )}
-              <g data-room-label-layer="constructor" pointerEvents="none">
-                {floor.elements
-                  .filter((item) => item.kind === 'room')
-                  .map((room) => (
-                    <RoomLabel
-                      key={room.id}
-                      room={room}
-                      zoom={camera.zoom}
-                      subtitle={
-                        room.bookable
-                          ? (room.shared ? 'Совместное · ' : 'Переговорная · ') +
-                            getRoomCapacity(room) +
-                            ' мест'
-                          : 'Общая зона'
-                      }
-                    />
-                  ))}
-              </g>
-              {!preview && selected?.kind === 'wall' && (
-                <g className="wall-selection" data-element-id={selected.id}>
-                  {(() => {
-                    const [start, end] = getWallEndpoints(selected);
-                    return (
-                      <>
-                        <path
-                          d={'M' + start.x + ' ' + start.y + 'L' + end.x + ' ' + end.y}
-                          fill="none"
-                          stroke="#7586e5"
-                          strokeWidth={2 / camera.zoom}
-                          pointerEvents="none"
-                        />
-                        {!selected.locked &&
-                          [start, end].map((point, index) => (
-                            <g
-                              key={index}
-                              data-handle={index === 0 ? 'wall-start' : 'wall-end'}
-                              role="button"
-                              aria-label={index === 0 ? 'Начало стены' : 'Конец стены'}
-                              className="wall-endpoint-handle"
-                            >
-                              <circle
-                                cx={point.x}
-                                cy={point.y}
-                                r={12 / camera.zoom}
-                                fill="transparent"
-                              />
-                              <circle
-                                cx={point.x}
-                                cy={point.y}
-                                r={5 / camera.zoom}
-                                fill="white"
-                                stroke="#697cdb"
-                                strokeWidth={1.5 / camera.zoom}
-                                pointerEvents="none"
-                              />
-                            </g>
-                          ))}
-                        <text
-                          x={(start.x + end.x) / 2}
-                          y={(start.y + end.y) / 2 - 12 / camera.zoom}
-                          textAnchor="middle"
-                          fontSize={11 / camera.zoom}
-                          fill="#677bc7"
-                          stroke="white"
-                          strokeWidth={3 / camera.zoom}
-                          paintOrder="stroke"
-                          pointerEvents="none"
-                        >
-                          {round(Math.hypot(end.x - start.x, end.y - start.y))} ед.
-                        </text>
-                      </>
-                    );
-                  })()}
-                </g>
-              )}
-              {!preview && selected && selected.kind !== 'wall' && (
-                <g
-                  data-element-id={selected.id}
-                  transform={selectedTransform}
-                  className="selection-bounds"
-                >
-                  <rect
-                    x={selected.x - 4}
-                    y={selected.y - 4}
-                    width={selected.width + 8}
-                    height={selected.height + 8}
-                    rx="3"
-                    fill="none"
-                    stroke="#5a6de3"
-                    strokeWidth={1.5 / camera.zoom}
-                    pointerEvents="none"
-                  />
-                  {!selected.locked && (
-                    <>
-                      <line
-                        x1={selected.x + selected.width / 2}
-                        y1={selected.y - 4}
-                        x2={selected.x + selected.width / 2}
-                        y2={selected.y - 29 / camera.zoom}
-                        stroke="#7f8fe6"
-                        strokeWidth={1 / camera.zoom}
-                      />
-                      <circle
-                        data-handle="rotate"
-                        cx={selected.x + selected.width / 2}
-                        cy={selected.y - 29 / camera.zoom}
-                        r={5 / camera.zoom}
-                        fill="white"
-                        stroke="#5a6de3"
-                        strokeWidth={1.5 / camera.zoom}
-                        className="rotate-handle"
-                      />
-                      <rect
-                        data-handle="resize"
-                        x={selected.x + selected.width - 4 / camera.zoom}
-                        y={selected.y + selected.height - 4 / camera.zoom}
-                        width={8 / camera.zoom}
-                        height={8 / camera.zoom}
-                        rx={2 / camera.zoom}
-                        fill="white"
-                        stroke="#5a6de3"
-                        strokeWidth={1.5 / camera.zoom}
-                        className="resize-handle"
-                      />
-                    </>
-                  )}
-                </g>
-              )}
-              {wallSnapMatch?.matched && !preview && (
-                <g pointerEvents="none" className="wall-snap-marker">
-                  <circle
-                    cx={wallSnapMatch.point.x}
-                    cy={wallSnapMatch.point.y}
-                    r={7 / camera.zoom}
-                    fill="white"
-                    fillOpacity=".85"
-                    stroke="#3baf91"
-                    strokeWidth={1.5 / camera.zoom}
-                  />
-                  <circle
-                    cx={wallSnapMatch.point.x}
-                    cy={wallSnapMatch.point.y}
-                    r={2 / camera.zoom}
-                    fill="#3baf91"
-                  />
-                </g>
-              )}
-              {underlayEditing && floor.background?.visible && !preview && (
-                <g className="underlay-edit-bounds" aria-label="Редактирование подложки">
-                  <rect
-                    data-underlay-action="move"
+                <rect
+                  x="0"
+                  y="0"
+                  width={floor.width}
+                  height={floor.height}
+                  rx="3"
+                  fill="#fff"
+                  filter="url(#floor-shadow)"
+                />
+                {floor.background?.visible && (
+                  <image
+                    className="plan-underlay"
+                    href={floor.background.src}
                     x={underlay.x}
                     y={underlay.y}
                     width={underlay.width}
                     height={underlay.height}
-                    fill="transparent"
-                    stroke="#697cdb"
-                    strokeWidth={1.5 / camera.zoom}
-                    strokeDasharray={5 / camera.zoom + ' ' + 4 / camera.zoom}
-                    className="underlay-move-target"
+                    preserveAspectRatio="xMidYMid meet"
+                    opacity={floor.background.opacity}
+                    pointerEvents="none"
                   />
-                  {(['nw', 'ne', 'se', 'sw'] as UnderlayCorner[]).map((corner) => {
-                    const x = underlay.x + (corner.includes('e') ? underlay.width : 0),
-                      y = underlay.y + (corner.includes('s') ? underlay.height : 0);
+                )}
+                {floor.elements
+                  .filter((item) => item.kind === 'room')
+                  .map((room) => (
+                    <g
+                      key={room.id}
+                      data-element-id={room.id}
+                      role="button"
+                      aria-label={room.name}
+                      transform={
+                        'rotate(' +
+                        room.rotation +
+                        ' ' +
+                        (room.x + room.width / 2) +
+                        ' ' +
+                        (room.y + room.height / 2) +
+                        ')'
+                      }
+                      className="plan-object room-object"
+                    >
+                      <title>{room.name}</title>
+                      <rect
+                        x={room.x}
+                        y={room.y}
+                        width={room.width}
+                        height={room.height}
+                        fill={room.color}
+                        fillOpacity={floor.background?.visible ? 0.45 : 0.8}
+                      />
+                    </g>
+                  ))}
+                <g
+                  fill="none"
+                  stroke="#536174"
+                  strokeWidth={WALL_THICKNESS}
+                  strokeLinecap="butt"
+                  strokeLinejoin="round"
+                  pointerEvents="none"
+                >
+                  {walls.map((wall, index) => (
+                    <path
+                      key={index}
+                      d={'M' + wall.x1 + ' ' + wall.y1 + 'L' + wall.x2 + ' ' + wall.y2}
+                    />
+                  ))}
+                </g>
+                {floor.elements
+                  .filter((item) => item.kind === 'wall')
+                  .map((item) => {
+                    const [start, end] = getWallEndpoints(item);
                     return (
                       <g
-                        key={corner}
-                        data-underlay-action={corner}
+                        key={item.id}
+                        data-element-id={item.id}
                         role="button"
-                        aria-label={'Изменить размер подложки ' + corner}
-                        style={{
-                          cursor:
-                            corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize',
-                        }}
+                        aria-label={item.name}
+                        className="wall-hit"
                       >
-                        <rect
-                          x={x - 12 / camera.zoom}
-                          y={y - 12 / camera.zoom}
-                          width={24 / camera.zoom}
-                          height={24 / camera.zoom}
-                          fill="transparent"
-                        />
-                        <rect
-                          x={x - 5 / camera.zoom}
-                          y={y - 5 / camera.zoom}
-                          width={10 / camera.zoom}
-                          height={10 / camera.zoom}
-                          rx={2 / camera.zoom}
-                          fill="white"
-                          stroke="#697cdb"
-                          strokeWidth={1.5 / camera.zoom}
-                          pointerEvents="none"
+                        <path
+                          d={'M' + start.x + ' ' + start.y + 'L' + end.x + ' ' + end.y}
+                          stroke="transparent"
+                          strokeWidth={Math.max(WALL_THICKNESS, 14 / camera.zoom)}
+                          fill="none"
+                          pointerEvents="stroke"
                         />
                       </g>
                     );
                   })}
-                </g>
-              )}
-              {underlayEditing && floor.background?.visible && !preview && (
-                <ScaleChair
-                  key={floor.id}
-                  source={floor.background.src}
-                  underlay={underlay}
-                  viewport={{
-                    x: camera.x,
-                    y: camera.y,
-                    width: size.width / camera.zoom,
-                    height: size.height / camera.zoom,
-                  }}
-                  zoom={camera.zoom}
-                  panEnabled={spacePressed || tool === 'pan'}
-                  toWorld={pointFrom}
-                />
-              )}
-              {ghost && (
-                <g pointerEvents="none">
-                  <rect
-                    transform={
-                      'rotate(' +
-                      ghost.rotation +
-                      ' ' +
-                      (ghost.x + ghost.width / 2) +
-                      ' ' +
-                      (ghost.y + ghost.height / 2) +
-                      ')'
-                    }
-                    x={ghost.x}
-                    y={ghost.y}
-                    width={ghost.width}
-                    height={ghost.height}
-                    fill={ghost.kind === 'wall' ? '#657697' : '#8396ec'}
-                    fillOpacity=".23"
-                    stroke="#657bea"
-                    strokeWidth={1.5 / camera.zoom}
-                    strokeDasharray={6 / camera.zoom + ' ' + 4 / camera.zoom}
+                {floor.elements
+                  .filter((item) => item.kind === 'desk' || item.kind === 'furniture')
+                  .map((item) => {
+                    const asset = getCatalogItem(item.type);
+                    return (
+                      <g
+                        key={item.id}
+                        data-element-id={item.id}
+                        role="button"
+                        aria-label={item.name}
+                        transform={
+                          'rotate(' +
+                          item.rotation +
+                          ' ' +
+                          (item.x + item.width / 2) +
+                          ' ' +
+                          (item.y + item.height / 2) +
+                          ')'
+                        }
+                        className={'plan-object ' + (item.locked ? 'object-locked' : '')}
+                      >
+                        <title>{item.name}</title>
+                        {asset ? (
+                          <image
+                            href={asset.asset}
+                            x={item.x}
+                            y={item.y}
+                            width={item.width}
+                            height={item.height}
+                            preserveAspectRatio="none"
+                            pointerEvents="none"
+                          />
+                        ) : (
+                          <rect
+                            x={item.x}
+                            y={item.y}
+                            width={item.width}
+                            height={item.height}
+                            fill="#d5ddeb"
+                            rx="8"
+                          />
+                        )}
+                        <rect
+                          x={item.x}
+                          y={item.y}
+                          width={item.width}
+                          height={item.height}
+                          fill="transparent"
+                        />
+                        {item.kind === 'desk' && item.bookable && (
+                          <circle
+                            cx={item.x + item.width - 5}
+                            cy={item.y + 4}
+                            r="6"
+                            fill="#7398e7"
+                            stroke="white"
+                            strokeWidth="2"
+                            pointerEvents="none"
+                          />
+                        )}
+                      </g>
+                    );
+                  })}
+                {grid && !preview && (
+                  <CanvasGrid
+                    x={camera.x}
+                    y={camera.y}
+                    width={size.width / camera.zoom}
+                    height={size.height / camera.zoom}
+                    zoom={camera.zoom}
+                    step={gridStep}
+                    editing={underlayEditing}
                   />
-                  <text
-                    x={ghost.x}
-                    y={ghost.y - 10 / camera.zoom}
-                    fill="#6375c0"
-                    fontSize={11 / camera.zoom}
-                  >
-                    {ghost.kind === 'wall'
-                      ? Math.round(ghost.width) + ' ед.'
-                      : Math.round(ghost.width) + ' × ' + Math.round(ghost.height)}
-                  </text>
-                </g>
-              )}
-              {itemTool && cursor && !dragRef.current && !preview && (
-                <image
-                  href={itemTool.asset}
-                  x={cursor.x - itemTool.width / 2}
-                  y={cursor.y - itemTool.height / 2}
-                  width={itemTool.width}
-                  height={itemTool.height}
-                  opacity=".55"
-                  pointerEvents="none"
-                />
-              )}
-            </svg>
-            {!floor.elements.length && !floor.background && (
-              <div className="empty-floor">
-                <div>
-                  <ImagePlus size={28} />
-                </div>
-                <h3>Здесь будет ваш офис</h3>
-                <p>
-                  Загрузите план этажа или начните с помещения.
-                  <br />
-                  Объекты можно добавлять из каталога слева.
-                </p>
-                <button className="primary-button" onClick={() => uploadRef.current?.click()}>
-                  <Upload size={16} />
-                  Загрузить план
-                </button>
-              </div>
-            )}
-            {underlayEditing ? (
-              <div className="underlay-edit-toolbar">
-                <div>
-                  <ImagePlus size={15} />
-                  <span>
-                    <b>Редактирование подложки</b>
-                    <small>Сравните масштаб со стулом · Тяните за углы</small>
-                  </span>
-                </div>
-                <button onClick={() => setUnderlayEditing(false)}>
-                  <Check size={15} />
-                  Готово
-                </button>
-              </div>
-            ) : (
-              <div className="canvas-mode-badge">
-                <span />
-                {preview ? 'Предпросмотр пространства' : actionTitle}
-                {tool.startsWith('asset:') && (
-                  <button onClick={() => setTool('select')}>
-                    Esc <X size={12} />
-                  </button>
                 )}
-              </div>
-            )}
-            {!preview && selected && (
-              <div className="selection-actions">
-                <button title="Дублировать · Ctrl D" onClick={duplicateSelected}>
-                  <Copy size={15} />
-                </button>
-                <button
-                  title="Повернуть · R"
-                  disabled={selected.locked}
-                  onClick={() => updateSelected({ rotation: (selected.rotation + 90) % 360 })}
-                >
-                  <RotateCw size={15} />
-                </button>
-                <button
-                  title="Удалить · Delete"
-                  disabled={selected.locked}
-                  onClick={removeSelected}
-                >
-                  <Trash2 size={15} />
-                </button>
-              </div>
-            )}
-          </div>
-          <div className="floating-toolbar">
-            <button
-              title="Выбрать · V"
-              aria-label="Инструмент выбора"
-              className={tool === 'select' ? 'tool-active' : ''}
-              onClick={() => setTool('select')}
-            >
-              <MousePointer2 size={18} />
-            </button>
-            <button
-              title="Переместить холст · H / Пробел"
-              className={tool === 'pan' ? 'tool-active' : ''}
-              onClick={() => setTool('pan')}
-            >
-              <Hand size={18} />
-            </button>
-            <span />
-            <button
-              title="Отменить · Ctrl Z"
-              aria-label="Отменить"
-              disabled={!undoRef.current.length}
-              onClick={undo}
-            >
-              <Undo2 size={17} />
-            </button>
-            <button
-              title="Повторить · Ctrl Shift Z"
-              aria-label="Повторить"
-              disabled={!redoRef.current.length}
-              onClick={redo}
-            >
-              <Redo2 size={17} />
-            </button>
-            <span />
-            <button
-              title="Привязка к сетке"
-              className={snapEnabled ? 'tool-active subtle' : ''}
-              onClick={() => setSnapEnabled(!snapEnabled)}
-            >
-              <Magnet size={17} />
-            </button>
-            <button
-              title="Показать сетку"
-              className={grid ? 'tool-active subtle' : ''}
-              onClick={() => setGrid(!grid)}
-            >
-              <Grid2X2 size={17} />
-            </button>
-            <span />
-            <button
-              title="Уменьшить масштаб"
-              aria-label="Уменьшить масштаб"
-              onClick={() => zoomAt(0.8)}
-            >
-              <Minus size={16} />
-            </button>
-            <b>{Math.round(camera.zoom * 100)}%</b>
-            <button
-              title="Увеличить масштаб"
-              aria-label="Увеличить масштаб"
-              onClick={() => zoomAt(1.25)}
-            >
-              <Plus size={16} />
-            </button>
-            <button title="Вписать план" aria-label="Вписать план" onClick={fit}>
-              <Maximize size={17} />
-            </button>
-          </div>
-          <div className="canvas-footer">
-            <span>
-              <i />
-              {preview ? 'Предпросмотр' : 'Режим конструктора'}
-            </span>
-            <span>
-              {cursor
-                ? Math.round(cursor.x) + ', ' + Math.round(cursor.y)
-                : 'Привязка ' + GRID_STEP + ' ед.'}
-              <em>·</em>
-              {grid ? 'Линии ' + gridStep + ' ед.' : 'Сетка скрыта'}
-            </span>
-            <span>1:{round(1 / camera.zoom)}</span>
-          </div>
-        </main>
-        {!preview && (
-          <Inspector
-            element={selected}
-            floor={floor}
-            onChange={updateSelected}
-            onDelete={removeSelected}
-            onDuplicate={duplicateSelected}
-            onSelect={setSelectedId}
-            onReorder={(direction) => {
-              if (!selected) return;
-              changeFloor((current) => ({
-                ...current,
-                elements:
-                  direction === 'front'
-                    ? [...current.elements.filter((item) => item.id !== selected.id), selected]
-                    : [selected, ...current.elements.filter((item) => item.id !== selected.id)],
-              }));
-            }}
-          />
-        )}
-      </div>
-      <input
-        ref={uploadRef}
-        type="file"
-        accept="image/png,image/jpeg,image/webp"
-        hidden
-        onChange={(event) => void loadBackground(event.target.files?.[0])}
-      />
-      {toast && (
-        <div className="toast" role="status">
-          <CheckCheck size={17} />
-          {toast}
+                <g data-room-label-layer="constructor" pointerEvents="none">
+                  {floor.elements
+                    .filter((item) => item.kind === 'room')
+                    .map((room) => (
+                      <RoomLabel
+                        key={room.id}
+                        room={room}
+                        zoom={camera.zoom}
+                        subtitle={
+                          room.bookable
+                            ? (room.shared ? 'Совместное · ' : 'Переговорная · ') +
+                              getRoomCapacity(room) +
+                              ' мест'
+                            : 'Общая зона'
+                        }
+                      />
+                    ))}
+                </g>
+                {!preview && selected?.kind === 'wall' && (
+                  <g className="wall-selection" data-element-id={selected.id}>
+                    {(() => {
+                      const [start, end] = getWallEndpoints(selected);
+                      return (
+                        <>
+                          <path
+                            d={'M' + start.x + ' ' + start.y + 'L' + end.x + ' ' + end.y}
+                            fill="none"
+                            stroke="#7586e5"
+                            strokeWidth={2 / camera.zoom}
+                            pointerEvents="none"
+                          />
+                          {!selected.locked &&
+                            [start, end].map((point, index) => (
+                              <g
+                                key={index}
+                                data-handle={index === 0 ? 'wall-start' : 'wall-end'}
+                                role="button"
+                                aria-label={index === 0 ? 'Начало стены' : 'Конец стены'}
+                                className="wall-endpoint-handle"
+                              >
+                                <circle
+                                  cx={point.x}
+                                  cy={point.y}
+                                  r={12 / camera.zoom}
+                                  fill="transparent"
+                                />
+                                <circle
+                                  cx={point.x}
+                                  cy={point.y}
+                                  r={5 / camera.zoom}
+                                  fill="white"
+                                  stroke="#697cdb"
+                                  strokeWidth={1.5 / camera.zoom}
+                                  pointerEvents="none"
+                                />
+                              </g>
+                            ))}
+                          <text
+                            x={(start.x + end.x) / 2}
+                            y={(start.y + end.y) / 2 - 12 / camera.zoom}
+                            textAnchor="middle"
+                            fontSize={11 / camera.zoom}
+                            fill="#677bc7"
+                            stroke="white"
+                            strokeWidth={3 / camera.zoom}
+                            paintOrder="stroke"
+                            pointerEvents="none"
+                          >
+                            {round(Math.hypot(end.x - start.x, end.y - start.y))} ед.
+                          </text>
+                        </>
+                      );
+                    })()}
+                  </g>
+                )}
+                {!preview && selected && selected.kind !== 'wall' && (
+                  <g
+                    data-element-id={selected.id}
+                    transform={selectedTransform}
+                    className="selection-bounds"
+                  >
+                    <rect
+                      x={selected.x - 4}
+                      y={selected.y - 4}
+                      width={selected.width + 8}
+                      height={selected.height + 8}
+                      rx="3"
+                      fill="none"
+                      stroke="#5a6de3"
+                      strokeWidth={1.5 / camera.zoom}
+                      pointerEvents="none"
+                    />
+                    {!selected.locked && (
+                      <>
+                        <line
+                          x1={selected.x + selected.width / 2}
+                          y1={selected.y - 4}
+                          x2={selected.x + selected.width / 2}
+                          y2={selected.y - 29 / camera.zoom}
+                          stroke="#7f8fe6"
+                          strokeWidth={1 / camera.zoom}
+                        />
+                        <circle
+                          data-handle="rotate"
+                          cx={selected.x + selected.width / 2}
+                          cy={selected.y - 29 / camera.zoom}
+                          r={5 / camera.zoom}
+                          fill="white"
+                          stroke="#5a6de3"
+                          strokeWidth={1.5 / camera.zoom}
+                          className="rotate-handle"
+                        />
+                        <rect
+                          data-handle="resize"
+                          x={selected.x + selected.width - 4 / camera.zoom}
+                          y={selected.y + selected.height - 4 / camera.zoom}
+                          width={8 / camera.zoom}
+                          height={8 / camera.zoom}
+                          rx={2 / camera.zoom}
+                          fill="white"
+                          stroke="#5a6de3"
+                          strokeWidth={1.5 / camera.zoom}
+                          className="resize-handle"
+                        />
+                      </>
+                    )}
+                  </g>
+                )}
+                {wallSnapMatch?.matched && !preview && (
+                  <g pointerEvents="none" className="wall-snap-marker">
+                    <circle
+                      cx={wallSnapMatch.point.x}
+                      cy={wallSnapMatch.point.y}
+                      r={7 / camera.zoom}
+                      fill="white"
+                      fillOpacity=".85"
+                      stroke="#3baf91"
+                      strokeWidth={1.5 / camera.zoom}
+                    />
+                    <circle
+                      cx={wallSnapMatch.point.x}
+                      cy={wallSnapMatch.point.y}
+                      r={2 / camera.zoom}
+                      fill="#3baf91"
+                    />
+                  </g>
+                )}
+                {underlayEditing && floor.background?.visible && !preview && (
+                  <g className="underlay-edit-bounds" aria-label="Редактирование подложки">
+                    <rect
+                      data-underlay-action="move"
+                      x={underlay.x}
+                      y={underlay.y}
+                      width={underlay.width}
+                      height={underlay.height}
+                      fill="transparent"
+                      stroke="#697cdb"
+                      strokeWidth={1.5 / camera.zoom}
+                      strokeDasharray={5 / camera.zoom + ' ' + 4 / camera.zoom}
+                      className="underlay-move-target"
+                    />
+                    {(['nw', 'ne', 'se', 'sw'] as UnderlayCorner[]).map((corner) => {
+                      const x = underlay.x + (corner.includes('e') ? underlay.width : 0),
+                        y = underlay.y + (corner.includes('s') ? underlay.height : 0);
+                      return (
+                        <g
+                          key={corner}
+                          data-underlay-action={corner}
+                          role="button"
+                          aria-label={'Изменить размер подложки ' + corner}
+                          style={{
+                            cursor:
+                              corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize',
+                          }}
+                        >
+                          <rect
+                            x={x - 12 / camera.zoom}
+                            y={y - 12 / camera.zoom}
+                            width={24 / camera.zoom}
+                            height={24 / camera.zoom}
+                            fill="transparent"
+                          />
+                          <rect
+                            x={x - 5 / camera.zoom}
+                            y={y - 5 / camera.zoom}
+                            width={10 / camera.zoom}
+                            height={10 / camera.zoom}
+                            rx={2 / camera.zoom}
+                            fill="white"
+                            stroke="#697cdb"
+                            strokeWidth={1.5 / camera.zoom}
+                            pointerEvents="none"
+                          />
+                        </g>
+                      );
+                    })}
+                  </g>
+                )}
+                {underlayEditing && floor.background?.visible && !preview && (
+                  <ScaleChair
+                    key={floor.id}
+                    source={floor.background.src}
+                    underlay={underlay}
+                    viewport={{
+                      x: camera.x,
+                      y: camera.y,
+                      width: size.width / camera.zoom,
+                      height: size.height / camera.zoom,
+                    }}
+                    zoom={camera.zoom}
+                    panEnabled={spacePressed || tool === 'pan'}
+                    toWorld={pointFrom}
+                  />
+                )}
+                {ghost && (
+                  <g pointerEvents="none">
+                    <rect
+                      transform={
+                        'rotate(' +
+                        ghost.rotation +
+                        ' ' +
+                        (ghost.x + ghost.width / 2) +
+                        ' ' +
+                        (ghost.y + ghost.height / 2) +
+                        ')'
+                      }
+                      x={ghost.x}
+                      y={ghost.y}
+                      width={ghost.width}
+                      height={ghost.height}
+                      fill={ghost.kind === 'wall' ? '#657697' : '#8396ec'}
+                      fillOpacity=".23"
+                      stroke="#657bea"
+                      strokeWidth={1.5 / camera.zoom}
+                      strokeDasharray={6 / camera.zoom + ' ' + 4 / camera.zoom}
+                    />
+                    <text
+                      x={ghost.x}
+                      y={ghost.y - 10 / camera.zoom}
+                      fill="#6375c0"
+                      fontSize={11 / camera.zoom}
+                    >
+                      {ghost.kind === 'wall'
+                        ? Math.round(ghost.width) + ' ед.'
+                        : Math.round(ghost.width) + ' × ' + Math.round(ghost.height)}
+                    </text>
+                  </g>
+                )}
+                {itemTool && cursor && !dragRef.current && !preview && (
+                  <image
+                    href={itemTool.asset}
+                    x={cursor.x - itemTool.width / 2}
+                    y={cursor.y - itemTool.height / 2}
+                    width={itemTool.width}
+                    height={itemTool.height}
+                    opacity=".55"
+                    pointerEvents="none"
+                  />
+                )}
+              </svg>
+              {!floor.elements.length && !floor.background && (
+                <div className="empty-floor">
+                  <div>
+                    <ImagePlus size={28} />
+                  </div>
+                  <h3>Здесь будет ваш офис</h3>
+                  <p>
+                    Загрузите план этажа или начните с помещения.
+                    <br />
+                    Объекты можно добавлять из каталога слева.
+                  </p>
+                  <button className="primary-button" onClick={() => uploadRef.current?.click()}>
+                    <Upload size={16} />
+                    Загрузить план
+                  </button>
+                </div>
+              )}
+              {underlayEditing ? (
+                <div className="underlay-edit-toolbar">
+                  <div>
+                    <ImagePlus size={15} />
+                    <span>
+                      <b>Редактирование подложки</b>
+                      <small>Сравните масштаб со стулом · Тяните за углы</small>
+                    </span>
+                  </div>
+                  <button onClick={() => setUnderlayEditing(false)}>
+                    <Check size={15} />
+                    Готово
+                  </button>
+                </div>
+              ) : (
+                <div className="canvas-mode-badge">
+                  <span />
+                  {preview ? 'Предпросмотр пространства' : actionTitle}
+                  {tool.startsWith('asset:') && (
+                    <button onClick={() => setTool('select')}>
+                      Esc <X size={12} />
+                    </button>
+                  )}
+                </div>
+              )}
+              {!preview && selected && (
+                <div className="selection-actions">
+                  <button title="Дублировать · Ctrl D" onClick={duplicateSelected}>
+                    <Copy size={15} />
+                  </button>
+                  <button
+                    title="Повернуть · R"
+                    disabled={selected.locked}
+                    onClick={() => updateSelected({ rotation: (selected.rotation + 90) % 360 })}
+                  >
+                    <RotateCw size={15} />
+                  </button>
+                  <button
+                    title="Удалить · Delete"
+                    disabled={selected.locked}
+                    onClick={removeSelected}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="floating-toolbar">
+              <button
+                title="Выбрать · V"
+                aria-label="Инструмент выбора"
+                className={tool === 'select' ? 'tool-active' : ''}
+                onClick={() => setTool('select')}
+              >
+                <MousePointer2 size={18} />
+              </button>
+              <button
+                title="Переместить холст · H / Пробел"
+                className={tool === 'pan' ? 'tool-active' : ''}
+                onClick={() => setTool('pan')}
+              >
+                <Hand size={18} />
+              </button>
+              <span />
+              <button
+                title="Отменить · Ctrl Z"
+                aria-label="Отменить"
+                disabled={!undoRef.current.length}
+                onClick={undo}
+              >
+                <Undo2 size={17} />
+              </button>
+              <button
+                title="Повторить · Ctrl Shift Z"
+                aria-label="Повторить"
+                disabled={!redoRef.current.length}
+                onClick={redo}
+              >
+                <Redo2 size={17} />
+              </button>
+              <span />
+              <button
+                title="Привязка к сетке"
+                className={snapEnabled ? 'tool-active subtle' : ''}
+                onClick={() => setSnapEnabled(!snapEnabled)}
+              >
+                <Magnet size={17} />
+              </button>
+              <button
+                title="Показать сетку"
+                className={grid ? 'tool-active subtle' : ''}
+                onClick={() => setGrid(!grid)}
+              >
+                <Grid2X2 size={17} />
+              </button>
+              <span />
+              <button
+                title="Уменьшить масштаб"
+                aria-label="Уменьшить масштаб"
+                onClick={() => zoomAt(0.8)}
+              >
+                <Minus size={16} />
+              </button>
+              <b>{Math.round(camera.zoom * 100)}%</b>
+              <button
+                title="Увеличить масштаб"
+                aria-label="Увеличить масштаб"
+                onClick={() => zoomAt(1.25)}
+              >
+                <Plus size={16} />
+              </button>
+              <button title="Вписать план" aria-label="Вписать план" onClick={fit}>
+                <Maximize size={17} />
+              </button>
+            </div>
+            <div className="canvas-footer">
+              <span>
+                <i />
+                {preview ? 'Предпросмотр' : 'Режим конструктора'}
+              </span>
+              <span>
+                {cursor
+                  ? Math.round(cursor.x) + ', ' + Math.round(cursor.y)
+                  : 'Привязка ' + GRID_STEP + ' ед.'}
+                <em>·</em>
+                {grid ? 'Линии ' + gridStep + ' ед.' : 'Сетка скрыта'}
+              </span>
+              <span>1:{round(1 / camera.zoom)}</span>
+            </div>
+          </main>
+          {!preview && (
+            <Inspector
+              element={selected}
+              floor={floor}
+              onChange={updateSelected}
+              onDelete={removeSelected}
+              onDuplicate={duplicateSelected}
+              onSelect={setSelectedId}
+              onReorder={(direction) => {
+                if (!selected) return;
+                changeFloor((current) => ({
+                  ...current,
+                  elements:
+                    direction === 'front'
+                      ? [...current.elements.filter((item) => item.id !== selected.id), selected]
+                      : [selected, ...current.elements.filter((item) => item.id !== selected.id)],
+                }));
+              }}
+            />
+          )}
         </div>
-      )}
-      {(settings || help) && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setSettings(false);
-              setHelp(false);
-              setUnderlayOpen(false);
-            }
-          }}
-        >
-          <section className="modal">
-            <button
-              className="modal-close icon-button"
-              aria-label="Закрыть"
-              onClick={() => {
+        <input
+          ref={uploadRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          hidden
+          onChange={(event) => void loadBackground(event.target.files?.[0])}
+        />
+        {toast && (
+          <div className="toast" role="status">
+            <CheckCheck size={17} />
+            {toast}
+          </div>
+        )}
+        {(settings || help) && (
+          <div
+            className="modal-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) {
                 setSettings(false);
                 setHelp(false);
                 setUnderlayOpen(false);
-              }}
-            >
-              <X size={18} />
-            </button>
-            <div className="modal-scroll">
-              {help ? (
-                <>
-                  <span className="eyebrow">БЫСТРЕЕ С КЛАВИАТУРОЙ</span>
-                  <h2>Каждому действию — свой жест</h2>
-                  <div className="shortcut-list">
-                    {[
-                      ['V', 'Выбрать объект'],
-                      ['H / Пробел', 'Перемещение холста'],
-                      ['W', 'Нарисовать стену'],
-                      ['R', 'Помещение / поворот объекта'],
-                      ['Delete', 'Удалить выбранное'],
-                      ['Ctrl D', 'Дублировать'],
-                      ['Ctrl Z', 'Отменить'],
-                      ['Ctrl Shift Z', 'Повторить'],
-                      ['Esc', 'Завершить действие'],
-                    ].map(([key, label]) => (
-                      <div key={key}>
-                        <span>{label}</span>
-                        <kbd>{key}</kbd>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <span className="eyebrow">ПЛАН ОФИСА</span>
-                  <h2>Настройки этажа</h2>
-                  <div className="field-grid">
-                    <label className="field">
-                      <span className="field-label">Название этажа</span>
-                      <input
-                        className="input"
-                        value={floor.name}
-                        onChange={(event) =>
-                          changeFloor((current) => ({ ...current, name: event.target.value }))
-                        }
-                      />
-                    </label>
-                    <label className="field">
-                      <span className="field-label">Размер плана</span>
-                      <span className="input muted">
-                        {floor.width} × {floor.height}
-                      </span>
-                    </label>
-                  </div>
-                  <button className="primary-button modal-done" onClick={() => setSettings(false)}>
-                    <Check size={16} />
-                    Готово
-                  </button>
-                  <button
-                    className="danger-button remove-floor"
-                    disabled={config.floors.length < 2}
-                    onClick={removeFloor}
-                  >
-                    <Trash2 size={14} />
-                    Удалить этот этаж
-                  </button>
-                </>
-              )}
-            </div>
-          </section>
-        </div>
-      )}
-    </div>
+              }
+            }}
+          >
+            <section className="modal">
+              <button
+                className="modal-close icon-button"
+                aria-label="Закрыть"
+                onClick={() => {
+                  setSettings(false);
+                  setHelp(false);
+                  setUnderlayOpen(false);
+                }}
+              >
+                <X size={18} />
+              </button>
+              <div className="modal-scroll">
+                {help ? (
+                  <>
+                    <span className="eyebrow">БЫСТРЕЕ С КЛАВИАТУРОЙ</span>
+                    <h2>Каждому действию — свой жест</h2>
+                    <div className="shortcut-list">
+                      {[
+                        ['V', 'Выбрать объект'],
+                        ['H / Пробел', 'Перемещение холста'],
+                        ['W', 'Нарисовать стену'],
+                        ['R', 'Помещение / поворот объекта'],
+                        ['Delete', 'Удалить выбранное'],
+                        ['Ctrl D', 'Дублировать'],
+                        ['Ctrl Z', 'Отменить'],
+                        ['Ctrl Shift Z', 'Повторить'],
+                        ['Esc', 'Завершить действие'],
+                      ].map(([key, label]) => (
+                        <div key={key}>
+                          <span>{label}</span>
+                          <kbd>{key}</kbd>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <span className="eyebrow">ПЛАН ОФИСА</span>
+                    <h2>Настройки этажа</h2>
+                    <div className="field-grid">
+                      <label className="field">
+                        <span className="field-label">Название этажа</span>
+                        <input
+                          className="input"
+                          value={floor.name}
+                          onChange={(event) =>
+                            changeFloor((current) => ({ ...current, name: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span className="field-label">Размер плана</span>
+                        <span className="input muted">
+                          {floor.width} × {floor.height}
+                        </span>
+                      </label>
+                    </div>
+                    <button
+                      className="primary-button modal-done"
+                      onClick={() => setSettings(false)}
+                    >
+                      <Check size={16} />
+                      Готово
+                    </button>
+                    <button
+                      className="danger-button remove-floor"
+                      disabled={config.floors.length < 2}
+                      onClick={removeFloor}
+                    >
+                      <Trash2 size={14} />
+                      Удалить этот этаж
+                    </button>
+                  </>
+                )}
+              </div>
+            </section>
+          </div>
+        )}
+      </div>
+    </OfficeWorkspace>
   );
 }
