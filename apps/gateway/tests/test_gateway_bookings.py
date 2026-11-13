@@ -214,6 +214,22 @@ def test_missing_revision_and_hidden_building_fail_before_business_write(booking
     assert state["booking_calls"] == []
 
 
+@pytest.mark.parametrize("field,value", [("revision", "invalid"), ("owner_id", None)])
+def test_malformed_upstream_booking_is_reported_as_a_gateway_contract_error(
+    booking_gateway, field, value
+):
+    client, state, token = booking_gateway
+    state["bookings"]["booking-own"][field] = value
+
+    response = client.get(
+        "/api/offices/office-own/bookings", headers={"Authorization": "Bearer " + token()}
+    )
+
+    assert response.status_code == 502
+    assert response.json()["code"] == "upstream_contract_invalid"
+    assert "owner_id" not in response.text
+
+
 @pytest.mark.parametrize("tool", ["update_booking", "cancel_booking"])
 def test_mcp_admin_still_cannot_mutate_another_users_booking(booking_gateway, tool):
     client, state, _ = booking_gateway

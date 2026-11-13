@@ -2,14 +2,16 @@
 
 import hashlib
 import json
-from typing import Annotated
+from typing import Annotated, TypedDict, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import TypeAdapter
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from workplace_platform.auth import Actor, require_actor
 from workplace_platform.correlation import event_metadata
+from workplace_platform.typing import JsonObject, JsonValue, SessionDependency
 
 from workplace_assistant.config import AssistantSettings, configuration_status
 from workplace_assistant.generation_models import GenerationRequest
@@ -23,7 +25,19 @@ def error(status: int, code: str) -> HTTPException:
     return HTTPException(status, detail={"code": code})
 
 
-def dialogue_event(session, dialogue, request_id, phase, **extra):
+class GenerationSnapshot(TypedDict):
+    request: GenerationView
+    session: SessionView
+    messages: list[MessageView]
+
+
+def dialogue_event(
+    session: AsyncSession,
+    dialogue: ChatSession,
+    request_id: UUID,
+    phase: str,
+    **extra: JsonValue,
+) -> None:
     metadata = event_metadata()
     session.add(
         OutboxEvent(
@@ -59,7 +73,9 @@ async def enqueue_message(
     if len(body.message) > settings.generation_message_chars:
         raise error(422, "assistant_message_too_long")
     owner_id = UUID(actor.user_id)
-    context = body.context.model_dump(mode="json", exclude_none=True)
+    context = TypeAdapter(JsonObject).validate_python(
+        body.context.model_dump(mode="json", exclude_none=True)
+    )
     fingerprint = hashlib.sha256(
         json.dumps(
             {"session_id": str(session_id), "message": body.message, "context": context},
@@ -157,8 +173,12 @@ async def enqueue_message(
     return generation
 
 
-async def request_snapshot(session, generation):
+async def request_snapshot(
+    session: AsyncSession, generation: GenerationRequest
+) -> GenerationSnapshot:
     dialogue = await session.get(ChatSession, generation.session_id)
+    if dialogue is None:
+        raise RuntimeError("Generation dialogue is missing")
     return {
         "request": GenerationView.model_validate(generation),
         "session": SessionView.model_validate(dialogue),
@@ -169,32 +189,34 @@ async def request_snapshot(session, generation):
     }
 
 
-def create_generation_router(get_session) -> APIRouter:
+def create_generation_router(get_session: SessionDependency) -> APIRouter:
     router = APIRouter()
-    Database = Annotated[AsyncSession, Depends(get_session)]
-    CurrentActor = Annotated[Actor, Depends(require_actor)]
 
     @router.post("/internal/chats/{session_id}/messages", status_code=202, tags=["generation"])
     async def send_message(
         session_id: UUID,
         body: MessageInput,
-        session: Database,
-        actor: CurrentActor,
+        session: Annotated[AsyncSession, Depends(get_session)],
+        actor: Annotated[Actor, Depends(require_actor)],
         request: Request,
         key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=128)],
-    ):
+    ) -> GenerationSnapshot:
         generation = await enqueue_message(
             session,
             actor,
             session_id,
             body,
             key,
-            request.app.state.settings,
+            cast(AssistantSettings, request.app.state.settings),
         )
         return await request_snapshot(session, generation)
 
     @router.get("/internal/generations/{request_id}", tags=["generation"])
-    async def generation_status(request_id: UUID, session: Database, actor: CurrentActor):
+    async def generation_status(
+        request_id: UUID,
+        session: Annotated[AsyncSession, Depends(get_session)],
+        actor: Annotated[Actor, Depends(require_actor)],
+    ) -> GenerationSnapshot:
         generation = await session.scalar(
             select(GenerationRequest).where(
                 GenerationRequest.id == request_id,

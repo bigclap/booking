@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+from workplace_platform.typing import JsonObject
 
 from workplace_assistant.generation_schemas import GenerationView
 
@@ -26,7 +27,7 @@ class MessageView(BaseModel):
     role: str
     content: str
     created_at: datetime
-    proposal: dict | None = None
+    proposal: JsonObject | None = None
 
 
 class DialogueView(BaseModel):

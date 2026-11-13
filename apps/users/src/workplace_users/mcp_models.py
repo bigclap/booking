@@ -1,12 +1,12 @@
 """OAuth grants owned by Users; raw opaque credentials are never persisted."""
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from workplace_platform.typing import JsonObject
 
 from workplace_users.models import Base
 
@@ -15,7 +15,7 @@ class MCPClient(Base):
     __tablename__ = "mcp_clients"
 
     id: Mapped[str] = mapped_column(String(160), primary_key=True)
-    metadata_document: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    metadata_document: Mapped[JsonObject] = mapped_column(JSONB)
     secret_ciphertext: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -25,7 +25,7 @@ class MCPAuthorizationRequest(Base):
 
     handle_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     client_id: Mapped[str] = mapped_column(ForeignKey("mcp_clients.id"))
-    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    parameters: Mapped[JsonObject] = mapped_column(JSONB)
     csrf_hash: Mapped[str | None] = mapped_column(String(64))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -38,7 +38,7 @@ class MCPAuthorizationCode(Base):
     client_id: Mapped[str] = mapped_column(ForeignKey("mcp_clients.id"))
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     session_id: Mapped[UUID] = mapped_column(ForeignKey("sessions.id"))
-    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    parameters: Mapped[JsonObject] = mapped_column(JSONB)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

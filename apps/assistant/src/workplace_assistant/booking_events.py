@@ -1,31 +1,39 @@
 """Archive the existing dialogue after a successful booking, regardless of its source."""
 
 import asyncio
-import json
 import logging
 import signal
 from datetime import datetime
 from uuid import UUID
 
 import nats
+from nats.aio.msg import Msg
 from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
-from sqlalchemy import func, select, text
+from pydantic import TypeAdapter
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from workplace_platform.outbox import STREAM, ensure_stream
+from workplace_platform.typing import JsonObject, SessionFactory
 
 from workplace_assistant.config import AssistantSettings
 from workplace_assistant.event_models import InboxEvent
 from workplace_assistant.models import ChatSession, OutboxEvent
+from workplace_assistant.repository import database_time
 
 SUBJECT = "workplace.booking.booking_changed"
 DURABLE = "ASSISTANT_BOOKING_EVENTS"
 logger = logging.getLogger(__name__)
 
 
-def event_parts(envelope: dict, subject: str | None):
-    event_id = UUID(envelope["id"])
+def event_parts(
+    envelope: JsonObject, subject: str | None
+) -> tuple[UUID, UUID | None, datetime | None]:
+    identifier = envelope["id"]
+    if not isinstance(identifier, str):
+        raise ValueError("Invalid booking event identifier")
+    event_id = UUID(identifier)
     if envelope["subject"] != SUBJECT or subject is not None and subject != SUBJECT:
         raise ValueError("Unexpected booking event subject")
     data = envelope["data"]
@@ -33,14 +41,20 @@ def event_parts(envelope: dict, subject: str | None):
         raise ValueError("Invalid event data")
     if data.get("operation") != "created":
         return event_id, None, None
-    owner_id = UUID(data["owner_id"])
-    cutoff = datetime.fromisoformat(data.get("updated_at") or envelope["occurred_at"])
+    owner = data["owner_id"]
+    timestamp = data.get("updated_at") or envelope["occurred_at"]
+    if not isinstance(owner, str) or not isinstance(timestamp, str):
+        raise ValueError("Invalid booking event owner or timestamp")
+    owner_id = UUID(owner)
+    cutoff = datetime.fromisoformat(timestamp)
     if cutoff.tzinfo is None:
         raise ValueError("Booking event timestamp must contain its timezone")
     return event_id, owner_id, cutoff
 
 
-async def handle_event(sessions, envelope: dict, *, subject: str | None = None) -> bool:
+async def handle_event(
+    sessions: SessionFactory, envelope: JsonObject, *, subject: str | None = None
+) -> bool:
     event_id, owner_id, cutoff = event_parts(envelope, subject)
     async with sessions() as session:
         async with session.begin():
@@ -54,6 +68,8 @@ async def handle_event(sessions, envelope: dict, *, subject: str | None = None) 
                 return False
             if owner_id is None:
                 return True
+            if cutoff is None:
+                raise ValueError("Booking creation event is missing its timestamp")
             # Same lock as new_dialogue: an empty/current/new-dialogue race is serialized.
             await session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtextextended(:owner, 0))"),
@@ -69,11 +85,13 @@ async def handle_event(sessions, envelope: dict, *, subject: str | None = None) 
                 .with_for_update()
             )
             if dialogue is not None:
-                dialogue.archived_at = func.clock_timestamp()
+                dialogue.archived_at = await database_time(session)
                 dialogue.archive_reason = "booking_created"
                 dialogue.version += 1
                 # Keep in_flight_request_id: a late reply belongs to this archived dialogue (D-108).
                 await session.flush()
+                data = envelope["data"]
+                booking_id = data.get("booking_id") if isinstance(data, dict) else None
                 session.add(
                     OutboxEvent(
                         subject="workplace.assistant.dialog.changed",
@@ -83,16 +101,16 @@ async def handle_event(sessions, envelope: dict, *, subject: str | None = None) 
                             "archived_session_id": str(dialogue.id),
                             "version": dialogue.version,
                             "reason": "booking_created",
-                            "booking_id": envelope["data"].get("booking_id"),
+                            "booking_id": booking_id,
                         },
                     )
                 )
     return True
 
 
-async def consume_message(message, sessions) -> bool:
+async def consume_message(message: Msg, sessions: SessionFactory) -> bool:
     try:
-        envelope = json.loads(message.data)
+        envelope = TypeAdapter(JsonObject).validate_json(message.data)
         await handle_event(sessions, envelope, subject=message.subject)
         await message.ack_sync(timeout=5)
         return True
@@ -102,7 +120,7 @@ async def consume_message(message, sessions) -> bool:
         return False
 
 
-async def run():
+async def run() -> None:
     settings = AssistantSettings()
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL is required for the booking-event worker")

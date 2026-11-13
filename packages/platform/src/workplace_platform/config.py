@@ -1,3 +1,4 @@
+from typing import Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, model_validator
@@ -24,9 +25,13 @@ class ServiceSettings(BaseSettings):
     web_jwt_audience: str = "workplace-web"
 
     @model_validator(mode="after")
-    def service_origins(self):
-        for name in ("users_url", "booking_url", "assistant_url"):
-            value = urlsplit(getattr(self, name))
+    def service_origins(self) -> Self:
+        for name, origin in (
+            ("users_url", self.users_url),
+            ("booking_url", self.booking_url),
+            ("assistant_url", self.assistant_url),
+        ):
+            value = urlsplit(origin)
             if (
                 value.scheme not in {"http", "https"}
                 or not value.hostname
@@ -37,11 +42,11 @@ class ServiceSettings(BaseSettings):
                 or value.path not in {"", "/"}
             ):
                 raise ValueError(f"{name.upper()} must be an HTTP(S) origin without a path")
-            setattr(self, name, getattr(self, name).rstrip("/"))
+            setattr(self, name, origin.rstrip("/"))
         return self
 
     @model_validator(mode="after")
-    def database_credentials(self):
+    def database_credentials(self) -> Self:
         public = urlsplit(self.public_base_url)
         if (
             public.scheme not in {"http", "https"}

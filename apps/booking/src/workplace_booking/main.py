@@ -1,12 +1,13 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from workplace_platform.auth import require_internal_key
+from workplace_platform.typing import SessionFactory
 from workplace_platform.web import create_app
 
 from workplace_booking.booking_routes import create_availability_router, create_booking_router
@@ -36,8 +37,8 @@ from workplace_booking.schemas import (
 
 
 @asynccontextmanager
-async def lifespan(app):
-    settings = app.state.settings
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = cast(BookingSettings, app.state.settings)
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL is required for Booking")
     engine = create_async_engine(settings.database_url, pool_pre_ping=True)
@@ -49,25 +50,26 @@ async def lifespan(app):
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
-    async with request.app.state.db_sessionmaker() as session:
+    sessions = cast(SessionFactory, request.app.state.db_sessionmaker)
+    async with sessions() as session:
         yield session
 
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 
 
-def build_app(settings: BookingSettings | None = None):
+def build_app(settings: BookingSettings | None = None) -> FastAPI:
     app = create_app("booking", settings or BookingSettings(), lifespan=lifespan)
     # Gateway owns user identity and rights (D-117). This is only the trusted service boundary.
     internal = APIRouter(prefix="/internal", dependencies=[Depends(require_internal_key)])
 
     @internal.get("/policy", response_model=BookingPolicy, tags=["policy"])
-    async def get_policy(request: Request):
-        config = request.app.state.settings
+    async def get_policy(request: Request) -> BookingPolicy:
+        config = cast(BookingSettings, request.app.state.settings)
         return policy_snapshot(config.step_minutes, config.horizon_days)
 
     @internal.get("/buildings", response_model=list[BuildingView], tags=["catalog"])
-    async def list_buildings(session: DbSession):
+    async def list_buildings(session: DbSession) -> list[BuildingView]:
         buildings = (
             await session.scalars(
                 select(Building)
@@ -105,7 +107,7 @@ def build_app(settings: BookingSettings | None = None):
     @internal.get(
         "/buildings/{building_id}/floors", response_model=list[FloorView], tags=["catalog"]
     )
-    async def list_floors(building_id: str, session: DbSession):
+    async def list_floors(building_id: str, session: DbSession) -> Sequence[Floor]:
         await get_building(session, building_id)
         return (
             await session.scalars(
@@ -123,7 +125,9 @@ def build_app(settings: BookingSettings | None = None):
         response_model=list[ResourceView],
         tags=["catalog"],
     )
-    async def list_resources(building_id: str, floor_id: str, session: DbSession):
+    async def list_resources(
+        building_id: str, floor_id: str, session: DbSession
+    ) -> list[ResourceView]:
         await get_building(session, building_id)
         floor = await session.scalar(
             select(Floor).where(
@@ -146,9 +150,12 @@ def build_app(settings: BookingSettings | None = None):
         ).all()
         return [
             ResourceView(
-                **ResourceView.model_validate(resource).model_dump(
-                    exclude={"capacity", "equipment"}
-                ),
+                id=resource.id,
+                floor_id=resource.floor_id,
+                parent_room_id=resource.parent_room_id,
+                kind=resource.kind,
+                name=resource.name,
+                shared_booking=resource.shared_booking,
                 capacity=resource_snapshot(resource, floor)["capacity"],
                 equipment=resource_snapshot(resource, floor)["equipment"],
             )
@@ -156,7 +163,7 @@ def build_app(settings: BookingSettings | None = None):
         ]
 
     @internal.get("/offices", response_model=list[OfficeDocument], tags=["offices"])
-    async def list_offices(session: DbSession):
+    async def list_offices(session: DbSession) -> list[OfficeDocument]:
         # Lock metadata while assembling floor documents, so a plan write cannot split the snapshot.
         buildings = (
             await session.scalars(
@@ -171,7 +178,7 @@ def build_app(settings: BookingSettings | None = None):
         return [await office_document(session, building) for building in buildings]
 
     @internal.get("/offices/{office_id}", response_model=OfficeDocument, tags=["offices"])
-    async def read_office(office_id: str, session: DbSession):
+    async def read_office(office_id: str, session: DbSession) -> OfficeDocument:
         building = await session.scalar(
             select(Building)
             .where(
@@ -185,7 +192,7 @@ def build_app(settings: BookingSettings | None = None):
         return await office_document(session, building)
 
     @internal.post("/offices", response_model=OfficeDocument, status_code=201, tags=["offices"])
-    async def add_office(body: OfficeCreateInput, session: DbSession):
+    async def add_office(body: OfficeCreateInput, session: DbSession) -> OfficeDocument:
         try:
             return await create_office(session, body)
         except IntegrityError as exc:
@@ -194,11 +201,15 @@ def build_app(settings: BookingSettings | None = None):
     @internal.patch(
         "/offices/{office_id}/settings", response_model=OfficeDocument, tags=["offices"]
     )
-    async def save_settings(office_id: str, body: OfficeSettingsInput, session: DbSession):
+    async def save_settings(
+        office_id: str, body: OfficeSettingsInput, session: DbSession
+    ) -> OfficeDocument:
         return await update_settings(session, office_id, body)
 
     @internal.put("/offices/{office_id}/plan", response_model=OfficeDocument, tags=["offices"])
-    async def save_plan(office_id: str, body: OfficePlanInput, session: DbSession):
+    async def save_plan(
+        office_id: str, body: OfficePlanInput, session: DbSession
+    ) -> OfficeDocument:
         try:
             return await update_plan(session, office_id, body)
         except IntegrityError as exc:

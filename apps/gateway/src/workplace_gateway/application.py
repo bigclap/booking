@@ -1,13 +1,16 @@
 import asyncio
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from typing import Literal, overload
 from urllib.parse import quote
 
 import httpx
 import jwt
-from fastapi import HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
+from starlette.middleware.base import RequestResponseEndpoint
 from workplace_platform.auth import encode_actor
 from workplace_platform.jwt_tokens import AccessContext, decode_access, signing_key
 from workplace_platform.web import create_app
@@ -22,6 +25,12 @@ from workplace_gateway.contracts.offices import (
     OfficeImport,
     OfficePlanUpdate,
     OfficeSettingsUpdate,
+)
+from workplace_gateway.contracts.service_responses import (
+    AssistantCapabilities,
+    BuildingResponse,
+    OfficeResponse,
+    SessionTokens,
 )
 from workplace_gateway.contracts.users import (
     AppUser,
@@ -38,14 +47,15 @@ from workplace_gateway.facade import create_facade
 from workplace_gateway.mcp_server import create_mcp_server
 from workplace_gateway.oauth_proxy import ProtocolCORSMiddleware
 from workplace_gateway.revisions import expected_revision, idempotency_key
+from workplace_gateway.upstream import parse_upstream
 
 
-def create_gateway(settings: GatewaySettings | None = None):
+def create_gateway(settings: GatewaySettings | None = None) -> FastAPI:
     settings = settings or GatewaySettings()
     signing_key(settings)
 
     @asynccontextmanager
-    async def lifespan(application):
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.oauth_http_client = application.state.http_client
         async with mcp_server.session_manager.run():
             yield
@@ -67,7 +77,13 @@ def create_gateway(settings: GatewaySettings | None = None):
         ],
     )
 
-    def check_origin(request: Request):
+    def service_client() -> httpx.AsyncClient:
+        client = app.state.http_client
+        if not isinstance(client, httpx.AsyncClient):
+            raise RuntimeError("Gateway HTTP client is not initialized")
+        return client
+
+    def check_origin(request: Request) -> None:
         if request.method in {"GET", "HEAD", "OPTIONS"}:
             return
         origin = request.headers.get("origin")
@@ -112,23 +128,53 @@ def create_gateway(settings: GatewaySettings | None = None):
             raise HTTPException(403, detail={"code": "administrator_required"})
         return current
 
-    def building_access(current: AccessContext, office_id: str):
+    def building_access(current: AccessContext, office_id: str) -> None:
         if current.user.role != "admin" and office_id not in current.user.building_ids:
             raise HTTPException(404, detail={"code": "building_not_found"})
 
+    @overload
     async def call(
-        request,
-        base,
-        path,
+        request: Request,
+        base: str,
+        path: str,
         *,
-        method="GET",
-        current=None,
-        payload=None,
-        query=None,
-        extra_headers=None,
-        with_status=False,
-        response=None,
-    ):
+        method: str = "GET",
+        current: AccessContext | None = None,
+        payload: object = None,
+        query: Mapping[str, str] | None = None,
+        extra_headers: Mapping[str, str] | None = None,
+        with_status: Literal[False] = False,
+        response: Response | None = None,
+    ) -> object: ...
+
+    @overload
+    async def call(
+        request: Request,
+        base: str,
+        path: str,
+        *,
+        method: str = "GET",
+        current: AccessContext | None = None,
+        payload: object = None,
+        query: Mapping[str, str] | None = None,
+        extra_headers: Mapping[str, str] | None = None,
+        with_status: Literal[True],
+        response: Response | None = None,
+    ) -> tuple[object, int]: ...
+
+    async def call(
+        request: Request,
+        base: str,
+        path: str,
+        *,
+        method: str = "GET",
+        current: AccessContext | None = None,
+        payload: object = None,
+        query: Mapping[str, str] | None = None,
+        extra_headers: Mapping[str, str] | None = None,
+        with_status: bool = False,
+        response: Response | None = None,
+    ) -> object:
         headers = {
             "X-Internal-Key": settings.internal_api_key.get_secret_value(),
             "X-Request-ID": request.state.request_id,
@@ -144,7 +190,7 @@ def create_gateway(settings: GatewaySettings | None = None):
         if extra_headers:
             headers.update(extra_headers)
         try:
-            result = await app.state.http_client.request(
+            result = await service_client().request(
                 method,
                 base + path,
                 headers=headers,
@@ -157,14 +203,16 @@ def create_gateway(settings: GatewaySettings | None = None):
             response.headers["X-Access-Operation-ID"] = result.headers["X-Access-Operation-ID"]
         if result.status_code >= 400:
             try:
-                error = result.json().get("detail", {})
+                error_body: object = result.json()
+                error: object = error_body.get("detail", {}) if isinstance(error_body, dict) else {}
             except ValueError:
                 error = {}
-            code = (
+            raw_code: object = (
                 error.get("code", "upstream_unavailable")
                 if isinstance(error, dict)
                 else "validation_error"
             )
+            code = raw_code if isinstance(raw_code, str) else "upstream_unavailable"
             raise HTTPException(
                 result.status_code if result.status_code < 500 else 503,
                 detail={
@@ -178,18 +226,21 @@ def create_gateway(settings: GatewaySettings | None = None):
                 },
             )
         if result.status_code == 204:
-            return None
+            return (None, result.status_code) if with_status else None
         try:
-            data = result.json()
+            data: object = result.json()
             return (data, result.status_code) if with_status else data
         except ValueError as exc:
             raise HTTPException(502, detail={"code": "upstream_contract_invalid"}) from exc
 
-    async def snapshot(request, current):
-        users = []
+    async def snapshot(request: Request, current: AccessContext) -> AuthSnapshot:
+        users: list[AppUser] = []
         if current.user.role == "admin":
             rows = await call(request, settings.users_url, "/internal/users", current=current)
-            users = [AppUser.from_internal(row) for row in rows]
+            users = [
+                AppUser.from_internal(row)
+                for row in parse_upstream(TypeAdapter(list[object]), rows)
+            ]
         return AuthSnapshot.model_validate(
             {
                 "user": AppUser.from_internal(current.user.model_dump()).model_dump(by_alias=True),
@@ -200,7 +251,7 @@ def create_gateway(settings: GatewaySettings | None = None):
             }
         )
 
-    def clear_cookies(response):
+    def clear_cookies(response: Response) -> None:
         for name, path in (
             (settings.cookie_name, "/"),
             (settings.refresh_cookie_name, "/api/auth"),
@@ -209,16 +260,17 @@ def create_gateway(settings: GatewaySettings | None = None):
                 name, path=path, secure=settings.cookie_secure, httponly=True, samesite="lax"
             )
 
-    async def authenticated_response(request, data):
+    async def authenticated_response(request: Request, raw: object) -> JSONResponse:
+        data = parse_upstream(TypeAdapter(SessionTokens), raw)
         try:
-            current = decode_access(data["access_token"], settings)
+            current = decode_access(data.access_token, settings)
             body = await snapshot(request, current)
             response = JSONResponse(
                 body.model_dump(mode="json", by_alias=True), headers={"Cache-Control": "no-store"}
             )
             for name, value, raw_deadline, path in (
-                (settings.cookie_name, data["access_token"], data["access_expires_at"], "/"),
-                (settings.refresh_cookie_name, data["token"], data["expires_at"], "/api/auth"),
+                (settings.cookie_name, data.access_token, data.access_expires_at, "/"),
+                (settings.refresh_cookie_name, data.token, data.expires_at, "/api/auth"),
             ):
                 # Browsers cap persistent-cookie storage; renew it on every permitted refresh.
                 # The server session itself has no calendar deadline (D-123).
@@ -242,14 +294,14 @@ def create_gateway(settings: GatewaySettings | None = None):
             raise HTTPException(502, detail={"code": "upstream_contract_invalid"}) from exc
 
     @app.middleware("http")
-    async def no_store(request, call_next):
+    async def no_store(request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 
     @app.post("/api/auth/login", response_model=AuthSnapshot, tags=["auth"])
-    async def login(payload: LoginInput, request: Request):
+    async def login(payload: LoginInput, request: Request) -> JSONResponse:
         check_origin(request)
         data = await call(
             request,
@@ -261,7 +313,7 @@ def create_gateway(settings: GatewaySettings | None = None):
         return await authenticated_response(request, data)
 
     @app.post("/api/auth/refresh", response_model=AuthSnapshot, tags=["auth"])
-    async def refresh(request: Request):
+    async def refresh(request: Request) -> JSONResponse:
         check_origin(request)
         token = request.cookies.get(settings.refresh_cookie_name)
         if not token:
@@ -276,15 +328,15 @@ def create_gateway(settings: GatewaySettings | None = None):
         return await authenticated_response(request, data)
 
     @app.get("/api/auth/session", response_model=AuthSnapshot, tags=["auth"])
-    async def session(request: Request):
+    async def session(request: Request) -> AuthSnapshot:
         return await snapshot(request, context(request))
 
     @app.get("/api/auth/me", response_model=AppUser, tags=["auth"])
-    async def me(request: Request):
+    async def me(request: Request) -> AppUser:
         return AppUser.from_internal(context(request).user.model_dump())
 
     @app.post("/api/auth/logout", status_code=204, tags=["auth"])
-    async def logout(request: Request):
+    async def logout(request: Request) -> Response:
         check_origin(request)
         token = request.cookies.get(settings.refresh_cookie_name)
         if token:
@@ -300,7 +352,7 @@ def create_gateway(settings: GatewaySettings | None = None):
         return response
 
     @app.post("/api/auth/password", status_code=204, tags=["auth"])
-    async def change_password(payload: PasswordChange, request: Request):
+    async def change_password(payload: PasswordChange, request: Request) -> Response:
         await call(
             request,
             settings.users_url,
@@ -317,12 +369,14 @@ def create_gateway(settings: GatewaySettings | None = None):
         return response
 
     @app.get("/api/users", response_model=list[AppUser], tags=["users"])
-    async def users(request: Request):
+    async def users(request: Request) -> list[AppUser]:
         rows = await call(request, settings.users_url, "/internal/users", current=admin(request))
-        return [AppUser.from_internal(row) for row in rows]
+        return [
+            AppUser.from_internal(row) for row in parse_upstream(TypeAdapter(list[object]), rows)
+        ]
 
     @app.post("/api/users", response_model=AppUser, status_code=201, tags=["users"])
-    async def create_user(payload: UserCreate, request: Request):
+    async def create_user(payload: UserCreate, request: Request) -> AppUser:
         data = payload.model_dump(exclude={"password"})
         data["password"] = payload.password.get_secret_value()
         return AppUser.from_internal(
@@ -337,7 +391,9 @@ def create_gateway(settings: GatewaySettings | None = None):
         )
 
     @app.patch("/api/users/{user_id}", response_model=AppUser, tags=["users"])
-    async def update_user(user_id: str, payload: UserUpdate, request: Request, response: Response):
+    async def update_user(
+        user_id: str, payload: UserUpdate, request: Request, response: Response
+    ) -> AppUser:
         return AppUser.from_internal(
             await call(
                 request,
@@ -350,8 +406,8 @@ def create_gateway(settings: GatewaySettings | None = None):
             )
         )
 
-    @app.get("/api/access-operations", tags=["users"])
-    async def access_operations(request: Request):
+    @app.get("/api/access-operations", tags=["users"], response_model=None)
+    async def access_operations(request: Request) -> object:
         return await call(
             request,
             settings.users_url,
@@ -360,8 +416,8 @@ def create_gateway(settings: GatewaySettings | None = None):
             query=dict(request.query_params),
         )
 
-    @app.get("/api/access-operations/{operation_id}", tags=["users"])
-    async def access_operation(operation_id: str, request: Request):
+    @app.get("/api/access-operations/{operation_id}", tags=["users"], response_model=None)
+    async def access_operation(operation_id: str, request: Request) -> object:
         return await call(
             request,
             settings.users_url,
@@ -370,7 +426,7 @@ def create_gateway(settings: GatewaySettings | None = None):
         )
 
     @app.post("/api/users/{user_id}/password", status_code=204, tags=["users"])
-    async def reset_password(user_id: str, payload: PasswordReset, request: Request):
+    async def reset_password(user_id: str, payload: PasswordReset, request: Request) -> Response:
         current = admin(request)
         await call(
             request,
@@ -386,37 +442,39 @@ def create_gateway(settings: GatewaySettings | None = None):
         return response
 
     @app.get("/api/booking/policy", response_model=BookingPolicy, tags=["booking"])
-    async def policy(request: Request):
-        return BookingPolicy.model_validate(
-            await call(request, settings.booking_url, "/internal/policy", current=context(request))
+    async def policy(request: Request) -> BookingPolicy:
+        return parse_upstream(
+            TypeAdapter(BookingPolicy),
+            await call(request, settings.booking_url, "/internal/policy", current=context(request)),
         )
 
-    def office_document(row):
-        if not row.get("floors") or any(
-            floor.get("plan_document") is None for floor in row["floors"]
-        ):
+    def office_document(raw: object) -> OfficeDocument:
+        row = parse_upstream(TypeAdapter(dict[str, object]), raw)
+        floors = parse_upstream(TypeAdapter(list[dict[str, object]] | None), row.get("floors"))
+        if not floors or any(floor.get("plan_document") is None for floor in floors):
             raise HTTPException(409, detail={"code": "office_document_unavailable"})
+        internal = parse_upstream(TypeAdapter(OfficeResponse), row)
         try:
             return OfficeDocument.model_validate(
                 {
                     "version": 1,
-                    "id": row["id"],
-                    "revision": row["revision"],
-                    "name": row["name"],
-                    **({"address": row["address"]} if row.get("address") else {}),
-                    "updatedAt": row["updated_at"],
-                    "hours": row["hours_document"],
-                    "floors": [floor["plan_document"] for floor in row["floors"]],
+                    "id": internal.id,
+                    "revision": internal.revision,
+                    "name": internal.name,
+                    **({"address": internal.address} if internal.address else {}),
+                    "updatedAt": internal.updated_at,
+                    "hours": internal.hours_document,
+                    "floors": [floor.plan_document for floor in internal.floors],
                 }
             )
         except (ValidationError, KeyError) as exc:
             raise HTTPException(502, detail={"code": "upstream_contract_invalid"}) from exc
 
-    async def office_list(request, current):
+    async def office_list(request: Request, current: AccessContext) -> list[OfficeDocument]:
         rows = await call(request, settings.booking_url, "/internal/offices", current=current)
         return [
             office_document(row)
-            for row in rows
+            for row in parse_upstream(TypeAdapter(list[dict[str, object]]), rows)
             if current.user.role == "admin" or row["id"] in current.user.building_ids
         ]
 
@@ -426,7 +484,7 @@ def create_gateway(settings: GatewaySettings | None = None):
         response_model_exclude_none=True,
         tags=["offices"],
     )
-    async def offices(request: Request):
+    async def offices(request: Request) -> list[OfficeDocument]:
         return await office_list(request, context(request))
 
     @app.get(
@@ -435,7 +493,7 @@ def create_gateway(settings: GatewaySettings | None = None):
         response_model_exclude_none=True,
         tags=["offices"],
     )
-    async def office(office_id: str, request: Request, response: Response):
+    async def office(office_id: str, request: Request, response: Response) -> OfficeDocument:
         current = context(request)
         building_access(current, office_id)
         document = office_document(
@@ -456,7 +514,9 @@ def create_gateway(settings: GatewaySettings | None = None):
         response_model_exclude_none=True,
         tags=["offices"],
     )
-    async def create_office(payload: OfficeCreate, request: Request, response: Response):
+    async def create_office(
+        payload: OfficeCreate, request: Request, response: Response
+    ) -> OfficeDocument:
         document = office_document(
             await call(
                 request,
@@ -478,7 +538,7 @@ def create_gateway(settings: GatewaySettings | None = None):
     )
     async def office_settings(
         office_id: str, payload: OfficeSettingsUpdate, request: Request, response: Response
-    ):
+    ) -> OfficeDocument:
         current = admin(request)
         data = payload.model_dump(mode="json", exclude_none=True, exclude={"revision"})
         data["hours_document"] = data.pop("hours")
@@ -504,7 +564,7 @@ def create_gateway(settings: GatewaySettings | None = None):
     )
     async def office_plan(
         office_id: str, payload: OfficePlanUpdate, request: Request, response: Response
-    ):
+    ) -> OfficeDocument:
         current = admin(request)
         revision = expected_revision(request, payload.revision)
         try:
@@ -534,9 +594,11 @@ def create_gateway(settings: GatewaySettings | None = None):
         response_model_exclude_none=True,
         tags=["offices"],
     )
-    async def import_office(payload: OfficeImport, request: Request, response: Response):
+    async def import_office(
+        payload: OfficeImport, request: Request, response: Response
+    ) -> OfficeDocument:
         current = admin(request)
-        data = {
+        data: dict[str, object] = {
             "document": payload.document.model_dump(mode="json", by_alias=True, exclude_none=True)
         }
         if payload.revision is not None or request.headers.get("if-match"):
@@ -555,26 +617,26 @@ def create_gateway(settings: GatewaySettings | None = None):
         response.headers["ETag"] = f'"{document.revision}"'
         return document
 
-    @app.get("/api/buildings", tags=["catalog"])
-    async def buildings(request: Request):
+    @app.get("/api/buildings", tags=["catalog"], response_model=None)
+    async def buildings(request: Request) -> list[dict[str, object]]:
         current = context(request)
         rows = await call(request, settings.booking_url, "/internal/buildings", current=current)
         return [
             {
-                "id": row["id"],
-                "name": row["name"],
-                "address": row["address"],
+                "id": row.id,
+                "name": row.name,
+                "address": row.address,
                 "workingHours": [
                     {
-                        "weekday": day["weekday"],
-                        "startTime": day["start_time"],
-                        "endTime": day["end_time"],
+                        "weekday": day.weekday,
+                        "startTime": day.start_time,
+                        "endTime": day.end_time,
                     }
-                    for day in row["working_hours"]
+                    for day in row.working_hours
                 ],
             }
-            for row in rows
-            if current.user.role == "admin" or row["id"] in current.user.building_ids
+            for row in parse_upstream(TypeAdapter(list[BuildingResponse]), rows)
+            if current.user.role == "admin" or row.id in current.user.building_ids
         ]
 
     @app.get(
@@ -583,7 +645,7 @@ def create_gateway(settings: GatewaySettings | None = None):
         response_model_exclude_none=True,
         tags=["bootstrap"],
     )
-    async def bootstrap(request: Request):
+    async def bootstrap(request: Request) -> dict[str, object]:
         current = context(request)
         auth, office_rows, time_policy = await asyncio.gather(
             snapshot(request, current),
@@ -595,12 +657,12 @@ def create_gateway(settings: GatewaySettings | None = None):
             "offices": [
                 row.model_dump(mode="json", by_alias=True, exclude_none=True) for row in office_rows
             ],
-            "policy": BookingPolicy.model_validate(time_policy).model_dump(
+            "policy": parse_upstream(TypeAdapter(BookingPolicy), time_policy).model_dump(
                 mode="json", by_alias=True
             ),
         }
 
-    async def assistant_call(request, path, method="GET"):
+    async def assistant_call(request: Request, path: str, method: str = "GET") -> object:
         return await call(
             request,
             settings.assistant_url,
@@ -610,30 +672,33 @@ def create_gateway(settings: GatewaySettings | None = None):
             query=dict(request.query_params),
         )
 
-    @app.get("/api/assistant/capabilities", tags=["assistant"])
-    async def capabilities(request: Request):
-        data = await assistant_call(request, "/internal/capabilities")
+    @app.get("/api/assistant/capabilities", tags=["assistant"], response_model=None)
+    async def capabilities(request: Request) -> dict[str, object]:
+        data = parse_upstream(
+            TypeAdapter(AssistantCapabilities),
+            await assistant_call(request, "/internal/capabilities"),
+        )
         return {
-            "runtime": data["runtime"],
-            "llmConfigured": data["llm_configured"],
-            "model": data["model"],
-            "generationAvailable": data["generation_available"],
+            "runtime": data.runtime,
+            "llmConfigured": data.llm_configured,
+            "model": data.model,
+            "generationAvailable": data.generation_available,
         }
 
-    @app.get("/api/chats/current", tags=["assistant"])
-    async def current_chat(request: Request):
+    @app.get("/api/chats/current", tags=["assistant"], response_model=None)
+    async def current_chat(request: Request) -> object:
         return await assistant_call(request, "/internal/chats/current")
 
-    @app.get("/api/chats", tags=["assistant"])
-    async def chats(request: Request):
+    @app.get("/api/chats", tags=["assistant"], response_model=None)
+    async def chats(request: Request) -> object:
         return await assistant_call(request, "/internal/chats")
 
-    @app.get("/api/chats/{chat_id}", tags=["assistant"])
-    async def chat(chat_id: str, request: Request):
+    @app.get("/api/chats/{chat_id}", tags=["assistant"], response_model=None)
+    async def chat(chat_id: str, request: Request) -> object:
         return await assistant_call(request, f"/internal/chats/{quote(chat_id, safe='')}")
 
     @app.post("/api/chats/new", tags=["assistant"])
-    async def new_chat(request: Request):
+    async def new_chat(request: Request) -> JSONResponse:
         return JSONResponse(
             await assistant_call(request, "/internal/chats/new", "POST"), status_code=201
         )
@@ -651,8 +716,10 @@ def create_gateway(settings: GatewaySettings | None = None):
     app.state.employee_facade = callbacks
 
     class DeferredServiceClient:
-        async def post(self, *args, **kwargs):
-            return await app.state.http_client.post(*args, **kwargs)
+        async def post(
+            self, url: str, *, headers: Mapping[str, str], json: object
+        ) -> httpx.Response:
+            return await service_client().post(url, headers=headers, json=json)
 
     mcp_server, mcp_app = create_mcp_server(
         settings, callbacks, http_client=DeferredServiceClient()

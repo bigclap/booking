@@ -16,6 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from workplace_platform.outbox import OutboxMixin
+from workplace_platform.typing import JsonObject
 
 
 class Base(DeclarativeBase):
@@ -61,7 +62,7 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     request_id: Mapped[UUID | None] = mapped_column()
-    proposal: Mapped[dict | None] = mapped_column(JSONB)
+    proposal: Mapped[JsonObject | None] = mapped_column(JSONB)
 
 
 class OutboxEvent(OutboxMixin, Base):

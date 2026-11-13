@@ -1,5 +1,6 @@
 """Short web access tokens. These are not MCP OAuth credentials."""
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
@@ -48,7 +49,7 @@ def signing_key(settings: ServiceSettings) -> str:
 
 
 def issue_access(
-    user_dict: dict,
+    user_dict: Mapping[str, object],
     session_id: str,
     refresh_expires_at: datetime | None,
     settings: ServiceSettings,

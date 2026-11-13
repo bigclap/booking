@@ -2,17 +2,28 @@
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import UTC, date, datetime, time, timedelta
+from typing import cast
 
 from fastapi import HTTPException
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from workplace_platform.correlation import event_metadata
+from workplace_platform.typing import JsonObject, JsonValue
 
 from workplace_booking.booking_models import Booking, BookingConfirmation, BookingMutation
-from workplace_booking.booking_schemas import BookingView
+from workplace_booking.booking_schemas import BookingView, CreateBookingInput, UpdateBookingInput
+from workplace_booking.config import BookingSettings
 from workplace_booking.models import Building, Floor, OutboxEvent, Resource, WorkingHours
+from workplace_booking.offices import plan_elements
 from workplace_booking.policy import MOSCOW, policy_snapshot
+from workplace_booking.types import (
+    BookingCandidate,
+    CapacityWarning,
+    EquipmentItem,
+    ResourceSnapshot,
+)
 
 SEAT_COUNTS = {
     "chair": 1,
@@ -25,21 +36,25 @@ SEAT_COUNTS = {
 }
 
 
-def resource_snapshot(resource: Resource, floor: Floor, resources=None) -> dict:
+def resource_snapshot(
+    resource: Resource, floor: Floor, resources: Mapping[str, Resource] | None = None
+) -> ResourceSnapshot:
     """Only explicit constructor relationships; never infer equipment by proximity."""
     element = next(
         (
             item
-            for item in (floor.plan_document or {}).get("elements", [])
+            for item in plan_elements(floor.plan_document or {})
             if item.get("id") == resource.id
         ),
         {},
     )
-    equipment = element.get("equipment")
+    # These fields were validated when the constructor document was persisted;
+    # keep extension keys rather than rebuilding or normalizing its JSON objects.
+    equipment = cast(list[EquipmentItem] | None, element.get("equipment"))
     capacity = (
         sum(SEAT_COUNTS.get(item["type"], 0) * item["quantity"] for item in equipment)
         if equipment is not None
-        else element.get("seats", 0)
+        else cast(int, element.get("seats", 0))
     )
     return {
         "id": resource.id,
@@ -52,12 +67,14 @@ def resource_snapshot(resource: Resource, floor: Floor, resources=None) -> dict:
         "descendant_ids": sorted(
             item.id
             for item in (resources or {}).values()
-            if item.deleted_at is None and resource.id in ancestors(item.id, resources)
+            if item.deleted_at is None and resource.id in ancestors(item.id, resources or {})
         ),
     }
 
 
-def capacity_warnings(snapshot: dict, participants: int | None) -> list[dict]:
+def capacity_warnings(
+    snapshot: ResourceSnapshot, participants: int | None
+) -> list[CapacityWarning]:
     if snapshot.get("kind") == "meeting_room" and participants is not None:
         capacity = snapshot.get("capacity", 0)
         if participants > capacity:
@@ -67,7 +84,7 @@ def capacity_warnings(snapshot: dict, participants: int | None) -> list[dict]:
     return []
 
 
-def failure(code: str, status: int = 422, **details) -> HTTPException:
+def failure(code: str, status: int = 422, **details: JsonValue) -> HTTPException:
     return HTTPException(status, detail={"code": code, **details})
 
 
@@ -92,7 +109,10 @@ async def locked_office(session: AsyncSession, office_id: str) -> Building:
 
 
 async def database_now(session: AsyncSession) -> datetime:
-    return (await session.scalar(select(func.clock_timestamp()))).astimezone(UTC)
+    value = await session.scalar(select(func.clock_timestamp()))
+    if not isinstance(value, datetime):
+        raise RuntimeError("Database clock did not return a timestamp")
+    return value.astimezone(UTC)
 
 
 def minute_of_day(value: datetime, day: date) -> int | float:
@@ -130,7 +150,9 @@ def booking_view(booking: Booking) -> BookingView:
     )
 
 
-async def catalog(session: AsyncSession, office_id: str):
+async def catalog(
+    session: AsyncSession, office_id: str
+) -> tuple[dict[str, Floor], dict[str, Resource], dict[int, WorkingHours]]:
     floors = (await session.scalars(select(Floor).where(Floor.building_id == office_id))).all()
     resources = (
         await session.scalars(
@@ -153,8 +175,8 @@ async def catalog(session: AsyncSession, office_id: str):
     )
 
 
-def ancestors(resource_id: str, resources: dict[str, Resource]) -> list[str]:
-    result = []
+def ancestors(resource_id: str, resources: Mapping[str, Resource]) -> list[str]:
+    result: list[str] = []
     seen = {resource_id}
     resource = resources.get(resource_id)
     while resource is not None and resource.parent_room_id is not None:
@@ -167,7 +189,12 @@ def ancestors(resource_id: str, resources: dict[str, Resource]) -> list[str]:
     return result
 
 
-def available_resource(floor_id, resource_id, floors, resources) -> Resource:
+def available_resource(
+    floor_id: str,
+    resource_id: str,
+    floors: Mapping[str, Floor],
+    resources: Mapping[str, Resource],
+) -> Resource:
     floor = floors.get(floor_id)
     resource = resources.get(resource_id)
     if (
@@ -186,7 +213,9 @@ def available_resource(floor_id, resource_id, floors, resources) -> Resource:
     return resource
 
 
-def within_schedule(starts_at: datetime, ends_at: datetime, hours) -> bool:
+def within_schedule(
+    starts_at: datetime, ends_at: datetime, hours: Mapping[int, WorkingHours]
+) -> bool:
     start, end = starts_at.astimezone(MOSCOW), ends_at.astimezone(MOSCOW)
     day = hours.get(start.weekday())
     return (
@@ -198,8 +227,16 @@ def within_schedule(starts_at: datetime, ends_at: datetime, hours) -> bool:
 
 
 def validate_interval(
-    day, start, end, settings, now, hours, *, started=False, administrative=False
-):
+    day: date,
+    start: int | float,
+    end: int | float,
+    settings: BookingSettings,
+    now: datetime,
+    hours: Mapping[int, WorkingHours],
+    *,
+    started: bool = False,
+    administrative: bool = False,
+) -> tuple[datetime, datetime]:
     if start >= end or start % settings.step_minutes or end % settings.step_minutes:
         raise failure("invalid_booking_interval")
     policy = policy_snapshot(settings.step_minutes, settings.horizon_days, now)
@@ -223,8 +260,14 @@ def validate_interval(
 
 
 async def check_conflicts(
-    session, office_id, resource_id, starts_at, ends_at, resources, exclude=None
-):
+    session: AsyncSession,
+    office_id: str,
+    resource_id: str,
+    starts_at: datetime,
+    ends_at: datetime,
+    resources: Mapping[str, Resource],
+    exclude: str | None = None,
+) -> None:
     query = select(Booking).where(
         Booking.building_id == office_id,
         Booking.status == "active",
@@ -245,11 +288,16 @@ async def check_conflicts(
             raise failure("booking_conflict", 409, conflicting_booking_id=other.id)
 
 
-async def changed(session: AsyncSession, booking: Booking, operation: str, metadata=None):
+async def changed(
+    session: AsyncSession,
+    booking: Booking,
+    operation: str,
+    metadata: Mapping[str, JsonValue] | None = None,
+) -> None:
     booking.updated_at = func.clock_timestamp()
     await session.flush()
     await session.refresh(booking, attribute_names=["updated_at"])
-    snapshot = booking_view(booking).model_dump(mode="json")
+    snapshot = cast(JsonObject, booking_view(booking).model_dump(mode="json"))
     if metadata is not None and "administrative" in metadata:
         snapshot["administrative"] = metadata["administrative"]
     previous = await session.scalar(
@@ -265,12 +313,14 @@ async def changed(session: AsyncSession, booking: Booking, operation: str, metad
     }
     affected_floor_ids = {booking.floor_id}
     if previous is not None:
-        affected_resource_ids.update(previous.snapshot.get("ancestor_ids", []))
-        affected_resource_ids.add(previous.snapshot["resource_id"])
+        affected_resource_ids.update(cast(list[str], previous.snapshot.get("ancestor_ids", [])))
+        affected_resource_ids.add(cast(str, previous.snapshot["resource_id"]))
         affected_resource_ids.update(
-            previous.snapshot.get("resource_snapshot", {}).get("descendant_ids", [])
+            cast(ResourceSnapshot, previous.snapshot.get("resource_snapshot", {})).get(
+                "descendant_ids", []
+            )
         )
-        affected_floor_ids.add(previous.snapshot["floor_id"])
+        affected_floor_ids.add(cast(str, previous.snapshot["floor_id"]))
     # Include child places when whole-room use changes; Gateway can invalidate the correct map rows.
     room_children = (
         await session.scalars(
@@ -294,7 +344,7 @@ async def changed(session: AsyncSession, booking: Booking, operation: str, metad
             )
             - affected_resource_ids
         )
-    snapshot["ancestor_ids"] = booking.ancestor_ids
+    snapshot["ancestor_ids"] = [value for value in booking.ancestor_ids]
     session.add(
         BookingMutation(
             booking_id=booking.id,
@@ -328,7 +378,9 @@ async def changed(session: AsyncSession, booking: Booking, operation: str, metad
     )
 
 
-async def find_booking(session: AsyncSession, office_id: str, booking_id: str, *, lock=False):
+async def find_booking(
+    session: AsyncSession, office_id: str, booking_id: str, *, lock: bool = False
+) -> Booking:
     query = select(Booking).where(Booking.id == booking_id, Booking.building_id == office_id)
     if lock:
         query = query.with_for_update()
@@ -338,12 +390,19 @@ async def find_booking(session: AsyncSession, office_id: str, booking_id: str, *
     return booking
 
 
-def check_revision(booking: Booking, expected: int):
+def check_revision(booking: Booking, expected: int) -> None:
     if booking.revision != expected:
         raise failure("booking_revision_conflict", 409, current_revision=booking.revision)
 
 
-async def create_booking(session, office_id, body, actor_id, key, settings):
+async def create_booking(
+    session: AsyncSession,
+    office_id: str,
+    body: CreateBookingInput,
+    actor_id: str,
+    key: str,
+    settings: BookingSettings,
+) -> tuple[BookingView, bool]:
     command = body.model_dump(mode="json", exclude={"administrative"})
     # Preserve fingerprints of confirmations saved before this additive command flag.
     if body.administrative:
@@ -362,6 +421,8 @@ async def create_booking(session, office_id, body, actor_id, key, settings):
             if confirmation.fingerprint != fingerprint:
                 raise failure("idempotency_key_reused", 409)
             replay = await session.get(Booking, confirmation.booking_id)
+            if replay is None:
+                raise RuntimeError("Booking confirmation references a missing booking")
             return booking_view(replay), False
         await locked_office(session, office_id)
         now = await database_now(session)
@@ -404,7 +465,13 @@ async def create_booking(session, office_id, body, actor_id, key, settings):
     return result, True
 
 
-async def update_booking(session, office_id, booking_id, body, settings):
+async def update_booking(
+    session: AsyncSession,
+    office_id: str,
+    booking_id: str,
+    body: UpdateBookingInput,
+    settings: BookingSettings,
+) -> BookingView:
     async with session.begin():
         await locked_office(session, office_id)
         booking = await find_booking(session, office_id, booking_id, lock=True)
@@ -415,25 +482,30 @@ async def update_booking(session, office_id, booking_id, body, settings):
         if booking.ends_at <= now and not body.administrative:
             raise failure("booking_completed", 409)
         old = booking_view(booking)
-        fields = body.model_dump(
-            exclude_unset=True, exclude={"expected_revision", "administrative"}
-        )
-        candidate = {**old.model_dump(), **fields}
+        candidate: BookingCandidate = {
+            "floor_id": body.floor_id if body.floor_id is not None else old.floor_id,
+            "resource_id": body.resource_id if body.resource_id is not None else old.resource_id,
+            "date": body.date if body.date is not None else old.date,
+            "start": body.start if body.start is not None else old.start,
+            "end": body.end if body.end is not None else old.end,
+            "owner_id": body.owner_id if body.owner_id is not None else old.owner_id,
+            "participants": body.participants
+            if "participants" in body.model_fields_set
+            else old.participants,
+        }
         started = booking.starts_at <= now
         if (
             started
             and not body.administrative
-            and any(
-                candidate[field] != getattr(old, field)
-                for field in (
-                    "floor_id",
-                    "resource_id",
-                    "date",
-                    "start",
-                    "owner_id",
-                    "participants",
-                )
+            and (
+                candidate["floor_id"],
+                candidate["resource_id"],
+                candidate["date"],
+                candidate["start"],
+                candidate["owner_id"],
+                candidate["participants"],
             )
+            != (old.floor_id, old.resource_id, old.date, old.start, old.owner_id, old.participants)
         ):
             raise failure("current_booking_end_only", 409)
         floors, resources, hours = await catalog(session, office_id)
@@ -441,7 +513,7 @@ async def update_booking(session, office_id, booking_id, body, settings):
             candidate["floor_id"], candidate["resource_id"], floors, resources
         )
         if resource.kind == "workstation":
-            if fields.get("participants") is not None:
+            if body.participants is not None:
                 raise failure("participants_not_applicable")
             candidate["participants"] = None
         elif candidate["participants"] is None:
@@ -465,8 +537,10 @@ async def update_booking(session, office_id, booking_id, body, settings):
             resources,
             exclude=booking.id,
         )
-        for field in ("floor_id", "resource_id", "owner_id", "participants"):
-            setattr(booking, field, candidate[field])
+        booking.floor_id = candidate["floor_id"]
+        booking.resource_id = candidate["resource_id"]
+        booking.owner_id = candidate["owner_id"]
+        booking.participants = candidate["participants"]
         booking.starts_at, booking.ends_at = starts_at, ends_at
         booking.scheduled_ends_at = ends_at
         booking.ancestor_ids = ancestors(booking.resource_id, resources)
@@ -480,8 +554,13 @@ async def update_booking(session, office_id, booking_id, body, settings):
 
 
 async def cancel_booking(
-    session, office_id, booking_id, expected_revision, *, administrative=False
-):
+    session: AsyncSession,
+    office_id: str,
+    booking_id: str,
+    expected_revision: int,
+    *,
+    administrative: bool = False,
+) -> BookingView:
     async with session.begin():
         await locked_office(session, office_id)
         booking = await find_booking(session, office_id, booking_id, lock=True)
@@ -502,7 +581,14 @@ async def cancel_booking(
     return result
 
 
-async def list_bookings(session, office_id, *, day=None, date_from=None, date_to=None):
+async def list_bookings(
+    session: AsyncSession,
+    office_id: str,
+    *,
+    day: date | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[BookingView]:
     exists = await session.scalar(
         select(Building.id).where(
             Building.id == office_id,
@@ -539,7 +625,9 @@ async def list_bookings(session, office_id, *, day=None, date_from=None, date_to
     ]
 
 
-async def review_office_bookings(session: AsyncSession, office_id: str, now=None):
+async def review_office_bookings(
+    session: AsyncSession, office_id: str, now: datetime | None = None
+) -> None:
     """Caller holds the building row lock; flush changes and flag affected bookings."""
     await session.flush()
     current = now or await database_now(session)

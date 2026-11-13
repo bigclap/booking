@@ -1,29 +1,34 @@
 """Durable generation worker: SQL lease, delegated MCP auth, official Agent.run, durable result."""
 
 import asyncio
-import json
 import logging
 import signal
+from collections.abc import Awaitable, Callable
+from contextvars import Token
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 import httpx
 import nats
+from nats.aio.msg import Msg
 from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
-from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from pydantic import TypeAdapter
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from workplace_platform.correlation import request_id as current_request_id
 from workplace_platform.correlation import trace_id as current_trace_id
 from workplace_platform.outbox import STREAM, ensure_stream
 from workplace_platform.rpc import service_client
+from workplace_platform.typing import JsonObject, JsonValue, SessionFactory
 
 from workplace_assistant.config import AssistantSettings, configuration_status
 from workplace_assistant.generation_models import GenerationRequest
 from workplace_assistant.generation_routes import dialogue_event
 from workplace_assistant.models import ChatMessage, ChatSession
-from workplace_assistant.runtime import run_agent, trim_history_chunks
+from workplace_assistant.repository import database_time
+from workplace_assistant.runtime import RuntimeResult, run_agent, trim_history_chunks
 
 SUBJECT = "workplace.assistant.generation_requested"
 DURABLE = "ASSISTANT_GENERATIONS"
@@ -46,18 +51,24 @@ class ClaimedRequest:
     session_id: UUID
     lease_token: UUID
     prompt: str
-    context: dict
-    history: list
+    context: JsonObject
+    history: list[JsonValue]
 
 
-async def owner_lock(session, owner_id):
+async def owner_lock(session: AsyncSession, owner_id: UUID) -> None:
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:owner, 0))"),
         {"owner": str(owner_id)},
     )
 
 
-async def terminal_failure(session, request, dialogue, code, now):
+async def terminal_failure(
+    session: AsyncSession,
+    request: GenerationRequest,
+    dialogue: ChatSession,
+    code: str,
+    now: datetime,
+) -> None:
     request.status = "failed"
     request.error_code = code
     request.completed_at = request.updated_at = now
@@ -68,7 +79,9 @@ async def terminal_failure(session, request, dialogue, code, now):
     dialogue_event(session, dialogue, request.id, "failed", error_code=code)
 
 
-async def claim_request(sessions, request_id: UUID, settings: AssistantSettings):
+async def claim_request(
+    sessions: SessionFactory, request_id: UUID, settings: AssistantSettings
+) -> ClaimedRequest | None:
     async with sessions() as session, session.begin():
         owner_id = await session.scalar(
             select(GenerationRequest.actor_id).where(
@@ -85,9 +98,11 @@ async def claim_request(sessions, request_id: UUID, settings: AssistantSettings)
             )
             .with_for_update()
         )
+        if request is None:
+            raise LookupError("Generation request is missing")
         if request.status in {"completed", "failed"}:
             return None
-        now = await session.scalar(select(func.clock_timestamp()))
+        now = await database_time(session)
         if request.status == "running" and request.lease_until and request.lease_until > now:
             raise GenerationBusy()
         dialogue = await session.scalar(
@@ -97,6 +112,8 @@ async def claim_request(sessions, request_id: UUID, settings: AssistantSettings)
             )
             .with_for_update()
         )
+        if dialogue is None:
+            raise LookupError("Generation dialogue is missing")
         if request.attempts >= settings.generation_attempt_limit:
             await terminal_failure(session, request, dialogue, "assistant_attempts_exhausted", now)
             return None
@@ -105,7 +122,8 @@ async def claim_request(sessions, request_id: UUID, settings: AssistantSettings)
             return None
         request.status = "running"
         request.attempts += 1
-        request.lease_token = uuid4()
+        lease_token = uuid4()
+        request.lease_token = lease_token
         request.lease_until = now + timedelta(seconds=settings.generation_timeout_seconds + 30)
         request.updated_at = now
         dialogue.version += 1
@@ -115,6 +133,8 @@ async def claim_request(sessions, request_id: UUID, settings: AssistantSettings)
                 ChatMessage.id == request.user_message_id,
             )
         )
+        if prompt is None:
+            raise LookupError("Generation message is missing")
         chunks = list(
             (
                 await session.scalars(
@@ -139,7 +159,7 @@ async def claim_request(sessions, request_id: UUID, settings: AssistantSettings)
             actor_id=request.actor_id,
             gateway_session_id=request.gateway_session_id,
             session_id=request.session_id,
-            lease_token=request.lease_token,
+            lease_token=lease_token,
             prompt=prompt,
             context=request.context,
             history=history,
@@ -166,7 +186,12 @@ async def delegate_token(settings: AssistantSettings, claimed: ClaimedRequest) -
         raise DelegationUnavailable() from exc
 
 
-async def finish_request(sessions, claimed: ClaimedRequest, result=None, error_code=None):
+async def finish_request(
+    sessions: SessionFactory,
+    claimed: ClaimedRequest,
+    result: RuntimeResult | None = None,
+    error_code: str | None = None,
+) -> bool:
     async with sessions() as session, session.begin():
         await owner_lock(session, claimed.actor_id)
         request = await session.scalar(
@@ -176,6 +201,8 @@ async def finish_request(sessions, claimed: ClaimedRequest, result=None, error_c
             )
             .with_for_update()
         )
+        if request is None:
+            raise LookupError("Generation request is missing")
         if request.status != "running" or request.lease_token != claimed.lease_token:
             return False
         dialogue = await session.scalar(
@@ -185,18 +212,25 @@ async def finish_request(sessions, claimed: ClaimedRequest, result=None, error_c
             )
             .with_for_update()
         )
-        now = await session.scalar(select(func.clock_timestamp()))
+        if dialogue is None:
+            raise LookupError("Generation dialogue is missing")
+        now = await database_time(session)
         if error_code is not None:
             await terminal_failure(session, request, dialogue, error_code, now)
             return True
-        reply = result.reply.model_dump(mode="json", exclude_none=True)
+        if result is None:
+            raise ValueError("A successful generation requires its result")
+        reply = TypeAdapter(JsonObject).validate_python(
+            result.reply.model_dump(mode="json", exclude_none=True)
+        )
+        proposal = reply.get("proposal")
         session.add(
             ChatMessage(
                 session_id=claimed.session_id,
                 request_id=claimed.id,
                 role="assistant",
                 content=result.reply.message,
-                proposal=reply.get("proposal"),
+                proposal=proposal if isinstance(proposal, dict) else None,
             )
         )
         request.run_messages = result.run_messages
@@ -211,9 +245,20 @@ async def finish_request(sessions, claimed: ClaimedRequest, result=None, error_c
     return True
 
 
+GenerationRunner = Callable[
+    [AssistantSettings, str, list[JsonValue], JsonObject, str], Awaitable[RuntimeResult]
+]
+TokenDelegate = Callable[[AssistantSettings, ClaimedRequest], Awaitable[str]]
+
+
 async def process_generation(
-    sessions, request_id: UUID, settings, *, runner=run_agent, delegate=delegate_token
-):
+    sessions: SessionFactory,
+    request_id: UUID,
+    settings: AssistantSettings,
+    *,
+    runner: GenerationRunner = run_agent,
+    delegate: TokenDelegate = delegate_token,
+) -> bool:
     claimed = await claim_request(sessions, request_id, settings)
     if claimed is None:
         return False
@@ -239,19 +284,28 @@ async def process_generation(
     return True
 
 
-async def consume_message(message, sessions, settings):
-    request_token = trace_token = None
+async def consume_message(
+    message: Msg, sessions: SessionFactory, settings: AssistantSettings
+) -> bool:
+    request_token: Token[str | None] | None = None
+    trace_token: Token[str | None] | None = None
     try:
-        envelope = json.loads(message.data)
+        envelope = TypeAdapter(JsonObject).validate_json(message.data)
         if envelope["subject"] != SUBJECT or message.subject != SUBJECT:
             raise ValueError("Unexpected generation event subject")
-        origin_id = envelope["data"].get("origin_request_id", envelope["data"]["request_id"])
-        trace = envelope["data"].get("trace_id", origin_id)
+        data = envelope["data"]
+        if not isinstance(data, dict):
+            raise ValueError("Invalid generation event data")
+        request_id = data["request_id"]
+        if not isinstance(request_id, str):
+            raise ValueError("Invalid generation identifier")
+        origin_id = data.get("origin_request_id", request_id)
+        trace = data.get("trace_id", origin_id)
         if not isinstance(origin_id, str) or not isinstance(trace, str):
             raise ValueError("Invalid generation correlation")
         request_token = current_request_id.set(origin_id)
         trace_token = current_trace_id.set(trace)
-        await process_generation(sessions, UUID(envelope["data"]["request_id"]), settings)
+        await process_generation(sessions, UUID(request_id), settings)
         await message.ack_sync(timeout=5)
         return True
     except Exception as exc:
@@ -265,7 +319,7 @@ async def consume_message(message, sessions, settings):
             current_trace_id.reset(trace_token)
 
 
-async def run():
+async def run() -> None:
     settings = AssistantSettings()
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL is required for the generation worker")

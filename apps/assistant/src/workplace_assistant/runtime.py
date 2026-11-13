@@ -1,22 +1,26 @@
 """Official Pydantic AI runtime with a fresh user-authenticated MCP session per run."""
 
 import json
+from collections.abc import Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
 import httpx2
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import Agent, ModelRetry, RunContext
-from pydantic_ai.mcp import MCPToolset
+from pydantic_ai.mcp import CallToolFunc, MCPToolset, ToolResult
 from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.models import Model
 from pydantic_ai.models.openrouter import OpenRouterModel
 from pydantic_ai.providers.openrouter import OpenRouterProvider
+from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.usage import UsageLimits
 from workplace_platform.correlation import event_metadata
+from workplace_platform.typing import JsonObject, JsonValue
 
 from workplace_assistant.config import AssistantSettings
 from workplace_assistant.generation_schemas import BookingProposal, StructuredReply
@@ -53,7 +57,7 @@ INSTRUCTIONS = """Ты помощник внутреннего сервиса б
 @dataclass
 class RuntimeDependencies:
     mcp_token: str
-    context: dict
+    context: JsonObject
     prepared: list[BookingProposal] = field(default_factory=list)
     allowed_origin: str = ""
 
@@ -61,12 +65,14 @@ class RuntimeDependencies:
 @dataclass
 class RuntimeResult:
     reply: StructuredReply
-    run_messages: list
+    run_messages: list[JsonValue]
 
 
-def trim_history_chunks(chunks: list[list], max_runs: int, max_chars: int) -> list:
+def trim_history_chunks(
+    chunks: list[list[JsonValue]], max_runs: int, max_chars: int
+) -> list[JsonValue]:
     """Keep a contiguous tail of complete SDK runs, never separating a tool call and its result."""
-    selected = []
+    selected: list[list[JsonValue]] = []
     size = 0
     for chunk in reversed(chunks[-max_runs:] if max_runs else []):
         length = len(json.dumps(chunk, ensure_ascii=False, separators=(",", ":")))
@@ -82,7 +88,12 @@ async def mcp_auth(context: RunContext[RuntimeDependencies]) -> str:
     return context.deps.mcp_token
 
 
-async def process_tool_call(context, call_tool, name: str, arguments: dict):
+async def process_tool_call(
+    context: RunContext[RuntimeDependencies],
+    call_tool: CallToolFunc,
+    name: str,
+    arguments: JsonObject,
+) -> ToolResult:
     if name not in ALLOWED_TOOLS:
         raise RuntimeError("Assistant tool is outside the selection contract")
     result = await call_tool(name, arguments)
@@ -108,7 +119,7 @@ def form_url_allowed(url: str, allowed_origin: str) -> bool:
             return False
         expected = urlsplit(allowed_origin)
 
-        def origin(parts):
+        def origin(parts: SplitResult) -> tuple[str, str | None, int]:
             port = (
                 parts.port if parts.port is not None else (443 if parts.scheme == "https" else 80)
             )
@@ -123,7 +134,9 @@ def form_url_allowed(url: str, allowed_origin: str) -> bool:
         return False
 
 
-def extract_prepared_proposal(result, *, allowed_origin: str = "") -> BookingProposal | None:
+def extract_prepared_proposal(
+    result: object, *, allowed_origin: str = ""
+) -> BookingProposal | None:
     """Support SDK structured returns and JSON text; never fabricate a form target."""
     if isinstance(result, str):
         try:
@@ -172,12 +185,12 @@ def grounded_proposal(
 async def run_agent(
     settings: AssistantSettings,
     prompt: str,
-    history: list,
-    context: dict,
+    history: list[JsonValue],
+    context: JsonObject,
     mcp_token: str,
     *,
-    model=None,
-    toolsets=None,
+    model: Model | None = None,
+    toolsets: Sequence[AbstractToolset[RuntimeDependencies]] | None = None,
     dependencies: RuntimeDependencies | None = None,
 ) -> RuntimeResult:
     """Tests explicitly inject TestModel/toolsets; production never falls back from OpenRouter."""
@@ -187,6 +200,8 @@ async def run_agent(
         raise ValueError("Delegated MCP credentials are missing")
     async with AsyncExitStack() as stack:
         if model is None:
+            if settings.openrouter_api_key is None or settings.openrouter_model is None:
+                raise ValueError("OpenRouter model configuration is missing")
             provider_http = await stack.enter_async_context(
                 httpx.AsyncClient(
                     timeout=settings.generation_provider_timeout_seconds,
@@ -210,7 +225,7 @@ async def run_agent(
                     },
                 )
             )
-            mcp = MCPToolset(
+            mcp = MCPToolset[RuntimeDependencies](
                 settings.mcp_url,
                 auth=mcp_auth,
                 http_client=mcp_http,
@@ -222,7 +237,7 @@ async def run_agent(
                 prefer_tasks=False,
             )
             toolsets = [mcp.filtered(lambda ctx, tool: tool.name in ALLOWED_TOOLS)]
-        agent = Agent(
+        agent = Agent[RuntimeDependencies, StructuredReply](
             model,
             output_type=StructuredReply,
             deps_type=RuntimeDependencies,
@@ -234,7 +249,9 @@ async def run_agent(
         )
 
         @agent.output_validator
-        def only_grounded_proposals(ctx: RunContext[RuntimeDependencies], reply: StructuredReply):
+        def only_grounded_proposals(
+            ctx: RunContext[RuntimeDependencies], reply: StructuredReply
+        ) -> StructuredReply:
             if reply.proposal is not None:
                 reply.proposal = grounded_proposal(reply.proposal, ctx.deps.prepared)
             return reply
@@ -257,5 +274,5 @@ async def run_agent(
             )
         return RuntimeResult(
             reply=result.output,
-            run_messages=json.loads(result.new_messages_json()),
+            run_messages=TypeAdapter(list[JsonValue]).validate_json(result.new_messages_json()),
         )

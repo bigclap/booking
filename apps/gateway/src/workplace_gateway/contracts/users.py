@@ -1,8 +1,19 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    StringConstraints,
+    TypeAdapter,
+    field_validator,
+)
 from pydantic.alias_generators import to_camel
+
+from workplace_gateway.contracts.internal import InternalUser
+from workplace_gateway.upstream import parse_upstream
 
 
 class PublicModel(BaseModel):
@@ -20,19 +31,20 @@ class AppUser(PublicModel):
     created_at: str
 
     @classmethod
-    def from_internal(cls, data: dict):
+    def from_internal(cls, data: object) -> "AppUser":
+        user = parse_upstream(TypeAdapter(InternalUser), data)
         return cls.model_validate(
             {
-                "id": str(data["id"]),
-                "login": data["login"],
-                "firstName": data["first_name"],
-                "lastName": data["last_name"],
-                "role": data["role"],
-                "active": data["active"],
-                "buildingIds": data["building_ids"],
-                "createdAt": data["created_at"].isoformat()
-                if isinstance(data["created_at"], datetime)
-                else data["created_at"],
+                "id": str(user.id),
+                "login": user.login,
+                "firstName": user.first_name,
+                "lastName": user.last_name,
+                "role": user.role,
+                "active": user.active,
+                "buildingIds": user.building_ids,
+                "createdAt": user.created_at.isoformat()
+                if isinstance(user.created_at, datetime)
+                else user.created_at,
             }
         )
 
@@ -60,7 +72,7 @@ class UserFields(PublicModel):
 
     @field_validator("login")
     @classmethod
-    def normalize_login(cls, value):
+    def normalize_login(cls, value: str) -> str:
         import re
 
         value = value.strip().lower()
@@ -70,7 +82,7 @@ class UserFields(PublicModel):
 
     @field_validator("building_ids")
     @classmethod
-    def normalize_buildings(cls, value):
+    def normalize_buildings(cls, value: list[str]) -> list[str]:
         if any(not item.strip() or len(item) > 1000 for item in value):
             raise ValueError("Некорректный список зданий")
         return list(dict.fromkeys(item.strip() for item in value))

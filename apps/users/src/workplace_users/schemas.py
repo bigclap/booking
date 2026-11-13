@@ -1,11 +1,12 @@
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Password = Annotated[str, Field(min_length=8, max_length=1024)]
 Role = Literal["employee", "admin"]
+NonNull = TypeVar("NonNull")
 
 
 class InputModel(BaseModel):
@@ -78,7 +79,7 @@ class UserPatch(InputModel):
 
     @field_validator("role", "active", "building_ids")
     @classmethod
-    def disallow_null(cls, value):
+    def disallow_null(cls, value: NonNull | None) -> NonNull:
         if value is None:
             raise ValueError("Must not be null")
         return value

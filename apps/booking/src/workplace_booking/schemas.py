@@ -1,7 +1,10 @@
 from datetime import datetime, time
-from typing import Any, Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from workplace_platform.typing import JsonObject
+
+from workplace_booking.types import EquipmentItem, HoursDocument
 
 
 class WorkingHoursView(BaseModel):
@@ -40,7 +43,7 @@ class ResourceView(BaseModel):
     name: str
     shared_booking: bool
     capacity: int = 0
-    equipment: list[dict] = Field(default_factory=list)
+    equipment: list[EquipmentItem] = Field(default_factory=list)
 
 
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -54,7 +57,7 @@ class DayHours(BaseModel):
     end: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
     @model_validator(mode="after")
-    def ordered_working_day(self):
+    def ordered_working_day(self) -> Self:
         if self.enabled and self.start >= self.end:
             raise ValueError("Working day must end after it starts")
         return self
@@ -67,7 +70,7 @@ class OfficeCreateInput(BaseModel):
     address: str | None = Field(default=None, max_length=160)
 
     @model_validator(mode="after")
-    def normalized_names(self):
+    def normalized_names(self) -> Self:
         self.name = self.name.strip()
         self.address = self.address.strip() or None if self.address is not None else None
         if not self.name:
@@ -80,7 +83,7 @@ class OfficeSettingsInput(OfficeCreateInput):
     hours_document: dict[str, DayHours]
 
     @model_validator(mode="after")
-    def known_weekdays(self):
+    def known_weekdays(self) -> Self:
         if not set(self.hours_document) <= set(DAYS):
             raise ValueError("Office hours contain an unknown weekday")
         return self
@@ -90,13 +93,13 @@ class OfficePlanInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_revision: int = Field(ge=1)
-    floors: list[dict[str, Any]] = Field(min_length=1, max_length=40)
+    floors: list[JsonObject] = Field(min_length=1, max_length=40)
 
 
 class OfficeImportInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    document: dict[str, Any]
+    document: JsonObject
     expected_revision: int | None = Field(default=None, ge=1)
 
 
@@ -104,7 +107,7 @@ class OfficeFloorDocument(BaseModel):
     id: str
     name: str
     position: int
-    plan_document: dict[str, Any] | None
+    plan_document: JsonObject | None
 
 
 class OfficeDocument(BaseModel):
@@ -113,5 +116,5 @@ class OfficeDocument(BaseModel):
     address: str | None
     revision: int
     updated_at: datetime
-    hours_document: dict[str, Any] | None
+    hours_document: HoursDocument | None
     floors: list[OfficeFloorDocument]

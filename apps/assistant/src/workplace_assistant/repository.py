@@ -30,6 +30,13 @@ async def messages_for(db: AsyncSession, session_id: UUID) -> list[ChatMessage]:
     )
 
 
+async def database_time(db: AsyncSession) -> datetime:
+    timestamp = await db.scalar(select(func.clock_timestamp()))
+    if not isinstance(timestamp, datetime):
+        raise RuntimeError("Database clock did not return a timestamp")
+    return timestamp
+
+
 async def new_dialogue(db: AsyncSession, user_id: UUID) -> ChatSession:
     """Caller commits the dialogue change and its outbox event atomically.
 
@@ -47,7 +54,7 @@ async def new_dialogue(db: AsyncSession, user_id: UUID) -> ChatSession:
         await db.flush()
     # An old booking event may arrive after the owner starts a new dialogue.
     # Timestamp creation after the lock wait instead of using transaction-start now().
-    created_at = await db.scalar(select(func.clock_timestamp()))
+    created_at = await database_time(db)
     dialogue = ChatSession(id=uuid4(), user_id=user_id, created_at=created_at)
     db.add(dialogue)
     await db.flush()

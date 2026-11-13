@@ -5,7 +5,7 @@ import html
 import re
 import secrets
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, TypedDict, cast
 from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
@@ -21,9 +21,13 @@ from sqlalchemy import select
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import Response as StarletteResponse
 from starlette.routing import Route
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from workplace_platform.auth import require_internal_key
+from workplace_platform.typing import JsonObject, SessionFactory
 
+from workplace_users.config import UsersSettings
 from workplace_users.mcp_auth_provider import SCOPE, MCPAuthProvider, utcnow
 from workplace_users.mcp_models import (
     MCPAuthorizationCode,
@@ -47,11 +51,19 @@ SECURITY_HEADERS = {
 }
 
 
-def invalid_request(message="Запрос устарел. Начните подключение заново.", status=400):
+def invalid_request(
+    message: str = "Запрос устарел. Начните подключение заново.", status: int = 400
+) -> HTMLResponse:
     return HTMLResponse(html.escape(message), status_code=status, headers=SECURITY_HEADERS)
 
 
-def consent_form(provider, handle, csrf, client_name, message=""):
+def consent_form(
+    provider: MCPAuthProvider,
+    handle: str,
+    csrf: str,
+    client_name: str,
+    message: str = "",
+) -> HTMLResponse:
     escape = html.escape
     return HTMLResponse(
         f"""<!doctype html><html lang="ru"><meta charset="utf-8">
@@ -75,18 +87,23 @@ button{{padding:12px;width:100%;background:#5267d7;color:white;border:0;border-r
     )
 
 
+def client_display_name(client: MCPClient) -> str:
+    name = client.metadata_document.get("client_name")
+    return name if isinstance(name, str) and name else client.id
+
+
 class TokenPolicyGuard:
     """Resource/PKCE policy around the SDK; the SDK performs the actual OAuth exchange."""
 
-    def __init__(self, app, resource, *, revocation=False):
+    def __init__(self, app: ASGIApp, resource: str, *, revocation: bool = False) -> None:
         self.app = app
         self.resource = resource
         self.revocation = revocation
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope["method"] != "POST":
             return await self.app(scope, receive, send)
-        chunks = []
+        chunks: list[bytes] = []
         size = 0
         while True:
             message = await receive()
@@ -105,10 +122,10 @@ class TokenPolicyGuard:
                 break
         body = b"".join(chunks)
 
-        def replay():
+        def replay() -> Receive:
             sent = False
 
-            async def next_message():
+            async def next_message() -> Message:
                 nonlocal sent
                 if sent:
                     return {"type": "http.disconnect"}
@@ -158,7 +175,7 @@ class TokenPolicyGuard:
         return await self.app(scope, replay(), send)
 
 
-def create_oauth_app(settings, sessions) -> Starlette:
+def create_oauth_app(settings: UsersSettings, sessions: SessionFactory) -> Starlette:
     provider = MCPAuthProvider(settings, sessions)
     registration = ClientRegistrationOptions(
         enabled=True,
@@ -186,7 +203,7 @@ def create_oauth_app(settings, sessions) -> Starlette:
         elif route.path == "/.well-known/oauth-authorization-server":
             route.app = cors_middleware(MetadataHandler(metadata).handle, ["GET", "OPTIONS"])
 
-    async def login(request: Request):
+    async def login(request: Request) -> StarletteResponse:
         if request.method == "GET":
             handle = request.query_params.get("request", "")
             if not handle or len(handle) > 128:
@@ -210,10 +227,8 @@ def create_oauth_app(settings, sessions) -> Starlette:
                 client = await db.get(MCPClient, pending.client_id)
                 if client is None:
                     return invalid_request()
-            response = consent_form(
-                provider, handle, csrf, client.metadata_document.get("client_name") or client.id
-            )
-            response.set_cookie(
+            consent_response = consent_form(provider, handle, csrf, client_display_name(client))
+            consent_response.set_cookie(
                 COOKIE,
                 csrf,
                 max_age=300,
@@ -222,16 +237,19 @@ def create_oauth_app(settings, sessions) -> Starlette:
                 samesite="lax",
                 path="/oauth/login",
             )
-            return response
+            return consent_response
 
         origin = request.headers.get("origin")
         parsed_base = urlsplit(provider.base_url)
         if origin is not None and origin != f"{parsed_base.scheme}://{parsed_base.netloc}":
             return invalid_request("Запрос отклонён.", 403)
         form = await request.form(max_fields=8, max_files=0, max_part_size=16384)
-        values = {name: form.get(name, "") for name in ("request", "csrf", "login", "password")}
-        if any(not isinstance(value, str) for value in values.values()):
-            return invalid_request()
+        values: dict[str, str] = {}
+        for name in ("request", "csrf", "login", "password"):
+            value = form.get(name, "")
+            if not isinstance(value, str):
+                return invalid_request()
+            values[name] = value
         handle, csrf = values["request"], values["csrf"]
         cookie = request.cookies.get(COOKIE, "")
         if (
@@ -277,9 +295,7 @@ def create_oauth_app(settings, sessions) -> Starlette:
                     provider,
                     handle,
                     csrf,
-                    (client.metadata_document.get("client_name") or client.id)
-                    if client
-                    else "Помощник",
+                    client_display_name(client) if client else "Помощник",
                     "Неверный логин или пароль.",
                 )
             now = utcnow()
@@ -324,34 +340,49 @@ class IntrospectMCPToken(BaseModel):
     resource: str = Field(min_length=1, max_length=2048)
 
 
-def create_mcp_internal_router():
+class MCPIntrospection(TypedDict):
+    user: UserView
+    session_id: str
+    client_id: str
+    scopes: list[str]
+    expires_at: int | None
+    resource: str | None
+
+
+def create_mcp_internal_router() -> APIRouter:
     router = APIRouter(prefix="/internal/mcp", dependencies=[Depends(require_internal_key)])
 
-    def provider_for(request):
-        if request.app.state.settings.mcp_encryption_key is None:
+    def provider_for(request: FastAPIRequest) -> MCPAuthProvider:
+        settings = cast(UsersSettings, request.app.state.settings)
+        if settings.mcp_encryption_key is None:
             raise HTTPException(503, detail={"code": "mcp_auth_not_configured"})
-        return MCPAuthProvider(request.app.state.settings, request.app.state.sessions)
+        return MCPAuthProvider(settings, cast(SessionFactory, request.app.state.sessions))
 
     @router.post("/delegate")
     async def delegate(
         request: FastAPIRequest,
         user_id: Annotated[UUID, Header(alias="X-User-ID")],
         session_id: Annotated[UUID, Header(alias="X-Session-ID")],
-    ):
+    ) -> JsonObject:
         provider = provider_for(request)
         tokens = await provider.delegate(user_id, session_id)
         if tokens is None:
             raise HTTPException(401, detail={"code": "session_invalid"})
-        return {**tokens.model_dump(exclude_none=True), "resource": provider.resource}
+        return cast(
+            JsonObject, {**tokens.model_dump(exclude_none=True), "resource": provider.resource}
+        )
 
     @router.post("/introspect")
-    async def introspect(body: IntrospectMCPToken, request: FastAPIRequest):
+    async def introspect(body: IntrospectMCPToken, request: FastAPIRequest) -> MCPIntrospection:
         provider = provider_for(request)
         token = await provider.load_access_token(body.token.get_secret_value())
         if token is None or body.resource != provider.resource:
             raise HTTPException(401, detail={"code": "mcp_token_invalid"})
-        async with request.app.state.sessions() as db:
+        sessions = cast(SessionFactory, request.app.state.sessions)
+        async with sessions() as db:
             row = await db.get(MCPToken, token_digest(token.token))
+            if row is None:
+                raise HTTPException(401, detail={"code": "mcp_token_invalid"})
             pair = await provider.identity(db, row.session_id, row.user_id)
             if pair is None:
                 raise HTTPException(401, detail={"code": "mcp_token_invalid"})

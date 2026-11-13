@@ -4,6 +4,8 @@ import base64
 import hashlib
 import re
 from datetime import UTC, datetime, timedelta
+from types import TracebackType
+from typing import cast
 from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -11,6 +13,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
+    AuthorizationParams,
     AuthorizeError,
     OAuthAuthorizationServerProvider,
     RefreshToken,
@@ -19,7 +22,10 @@ from mcp.server.auth.provider import (
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
+from workplace_platform.typing import JsonObject, SessionFactory
 
+from workplace_users.config import UsersSettings
 from workplace_users.mcp_models import (
     MCPAuthorizationCode,
     MCPAuthorizationRequest,
@@ -33,28 +39,36 @@ SCOPE = "booking"
 BUILTIN_CLIENT = "builtin-assistant"
 
 
-def utcnow():
+def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def code_family(code_hash):
+def code_family(code_hash: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"workplace:mcp:code:{code_hash}")
 
 
 class ProviderTransaction:
     """Avoid generator-context traceback mutation of the SDK's frozen error dataclasses."""
 
-    def __init__(self, sessions):
+    db: AsyncSession
+    transaction: AsyncSessionTransaction
+
+    def __init__(self, sessions: SessionFactory) -> None:
         self.sessions = sessions
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> AsyncSession:
         self.db = self.sessions()
         await self.db.__aenter__()
         self.transaction = self.db.begin()
         await self.transaction.__aenter__()
         return self.db
 
-    async def __aexit__(self, kind, value, traceback):
+    async def __aexit__(
+        self,
+        kind: type[BaseException] | None,
+        value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         try:
             return await self.transaction.__aexit__(kind, value, traceback)
         finally:
@@ -64,7 +78,7 @@ class ProviderTransaction:
 class MCPAuthProvider(
     OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]
 ):
-    def __init__(self, settings, sessions):
+    def __init__(self, settings: UsersSettings, sessions: SessionFactory) -> None:
         self.settings = settings
         self.sessions = sessions
         self.base_url = str(settings.public_base_url).rstrip("/")
@@ -79,10 +93,10 @@ class MCPAuthProvider(
         key = hashlib.sha256(b"workplace:mcp:client-secret:" + encryption_secret.encode()).digest()
         self.cipher = Fernet(base64.urlsafe_b64encode(key))
 
-    def transaction(self):
+    def transaction(self) -> ProviderTransaction:
         return ProviderTransaction(self.sessions)
 
-    async def get_client(self, client_id):
+    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         async with self.sessions() as db:
             row = await db.get(MCPClient, client_id)
             if row is None:
@@ -97,7 +111,7 @@ class MCPAuthProvider(
                     return None
             return OAuthClientInformationFull.model_validate(value)
 
-    async def register_client(self, client_info):
+    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         if set((client_info.scope or "").split()) != {SCOPE}:
             raise RegistrationError("invalid_client_metadata", "Only booking scope is available")
         if (
@@ -133,7 +147,7 @@ class MCPAuthProvider(
                 )
         if not client_info.redirect_uris:
             raise RegistrationError("invalid_redirect_uri", "A callback is required")
-        metadata = client_info.model_dump(mode="json", exclude={"client_secret"})
+        metadata = cast(JsonObject, client_info.model_dump(mode="json", exclude={"client_secret"}))
         encrypted = (
             self.cipher.encrypt(client_info.client_secret.encode()).decode()
             if client_info.client_secret
@@ -148,7 +162,9 @@ class MCPAuthProvider(
                 )
             )
 
-    async def authorize(self, client, params):
+    async def authorize(
+        self, client: OAuthClientInformationFull, params: AuthorizationParams
+    ) -> str:
         if params.resource != self.resource:
             raise AuthorizeError("invalid_target", "The MCP resource must match this server")
         if not re.fullmatch(r"[A-Za-z0-9_-]{43}", params.code_challenge):
@@ -163,13 +179,15 @@ class MCPAuthProvider(
                 MCPAuthorizationRequest(
                     handle_hash=token_digest(handle),
                     client_id=client.client_id,
-                    parameters=params.model_dump(mode="json"),
+                    parameters=cast(JsonObject, params.model_dump(mode="json")),
                     expires_at=utcnow() + timedelta(minutes=5),
                 )
             )
         return f"{self.issuer}/login?request={handle}"
 
-    async def identity(self, db, session_id, user_id, *, lock=False):
+    async def identity(
+        self, db: AsyncSession, session_id: UUID, user_id: UUID, *, lock: bool = False
+    ) -> tuple[User, Session] | None:
         query = (
             select(User, Session)
             .join(Session, Session.user_id == User.id)
@@ -184,9 +202,11 @@ class MCPAuthProvider(
         if lock:
             query = query.with_for_update(of=User)
         pair = (await db.execute(query)).one_or_none()
-        return pair
+        return (pair[0], pair[1]) if pair is not None else None
 
-    async def load_authorization_code(self, client, authorization_code):
+    async def load_authorization_code(
+        self, client: OAuthClientInformationFull, authorization_code: str
+    ) -> AuthorizationCode | None:
         async with self.transaction() as db:
             row = await db.get(MCPAuthorizationCode, token_digest(authorization_code))
             if row is None or row.client_id != client.client_id or row.expires_at <= utcnow():
@@ -196,17 +216,27 @@ class MCPAuthProvider(
                 return None
             if await self.identity(db, row.session_id, row.user_id) is None:
                 return None
-            return AuthorizationCode(
-                code=authorization_code,
-                client_id=row.client_id,
-                expires_at=row.expires_at.timestamp(),
-                subject=str(row.user_id),
-                **{key: value for key, value in row.parameters.items() if key != "state"},
+            return AuthorizationCode.model_validate(
+                {
+                    "code": authorization_code,
+                    "client_id": row.client_id,
+                    "expires_at": row.expires_at.timestamp(),
+                    "subject": str(row.user_id),
+                    **{key: value for key, value in row.parameters.items() if key != "state"},
+                }
             )
 
     async def issue_pair(
-        self, db, *, client_id, user_id, session_id, family_id, scopes, refresh=True
-    ):
+        self,
+        db: AsyncSession,
+        *,
+        client_id: str,
+        user_id: UUID,
+        session_id: UUID,
+        family_id: UUID,
+        scopes: list[str],
+        refresh: bool = True,
+    ) -> OAuthToken:
         now = utcnow()
         access = issue_token()
         db.add(
@@ -245,7 +275,9 @@ class MCPAuthProvider(
             scope=" ".join(scopes),
         )
 
-    async def exchange_authorization_code(self, client, authorization_code):
+    async def exchange_authorization_code(
+        self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
+    ) -> OAuthToken:
         async with self.transaction() as db:
             row = await db.scalar(
                 select(MCPAuthorizationCode)
@@ -264,17 +296,21 @@ class MCPAuthProvider(
             ):
                 raise TokenError("invalid_grant", "The authorization code is no longer valid")
             row.consumed_at = utcnow()
+            parameters = AuthorizationParams.model_validate(row.parameters)
+            # authorize() always persists normalized scopes, and the SDK loaded
+            # this row as an AuthorizationCode with a required list of scopes.
+            assert parameters.scopes is not None
             return await self.issue_pair(
                 db,
                 client_id=client.client_id,
                 user_id=row.user_id,
                 session_id=row.session_id,
                 family_id=code_family(row.code_hash),
-                scopes=row.parameters["scopes"],
+                scopes=parameters.scopes,
                 refresh="refresh_token" in client.grant_types,
             )
 
-    async def revoke_family(self, db, family_id):
+    async def revoke_family(self, db: AsyncSession, family_id: UUID) -> None:
         await db.execute(
             update(MCPToken)
             .where(
@@ -284,7 +320,9 @@ class MCPAuthProvider(
             .values(revoked_at=func.clock_timestamp())
         )
 
-    async def load_refresh_token(self, client, refresh_token):
+    async def load_refresh_token(
+        self, client: OAuthClientInformationFull, refresh_token: str
+    ) -> RefreshToken | None:
         async with self.transaction() as db:
             row = await db.get(MCPToken, token_digest(refresh_token))
             if row is None or row.kind != "refresh" or row.client_id != client.client_id:
@@ -307,7 +345,9 @@ class MCPAuthProvider(
                 subject=str(row.user_id),
             )
 
-    async def exchange_refresh_token(self, client, refresh_token, scopes):
+    async def exchange_refresh_token(
+        self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list[str]
+    ) -> OAuthToken:
         replay = False
         tokens = None
         async with self.transaction() as db:
@@ -343,9 +383,10 @@ class MCPAuthProvider(
                 )
         if replay:
             raise TokenError("invalid_grant", "Refresh token was already used")
+        assert tokens is not None
         return tokens
 
-    async def load_access_token(self, token):
+    async def load_access_token(self, token: str) -> AccessToken | None:
         async with self.sessions() as db:
             row = await db.get(MCPToken, token_digest(token))
             if (
@@ -367,13 +408,13 @@ class MCPAuthProvider(
                 claims={"iss": self.issuer, "sid": str(row.session_id)},
             )
 
-    async def revoke_token(self, token):
+    async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         async with self.transaction() as db:
             row = await db.get(MCPToken, token_digest(token.token))
             if row is not None:
                 await self.revoke_family(db, row.family_id)
 
-    async def delegate(self, user_id: UUID, session_id: UUID):
+    async def delegate(self, user_id: UUID, session_id: UUID) -> OAuthToken | None:
         async with self.transaction() as db:
             if await self.identity(db, session_id, user_id, lock=True) is None:
                 return None

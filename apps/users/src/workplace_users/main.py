@@ -1,11 +1,11 @@
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, cast
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, or_, select, update
@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
 from workplace_platform.auth import require_internal_key
 from workplace_platform.correlation import event_metadata
 from workplace_platform.jwt_tokens import issue_access, signing_key
+from workplace_platform.typing import JsonObject, SessionFactory
 from workplace_platform.web import create_app
 
 from workplace_users.config import UsersSettings
@@ -43,7 +44,8 @@ def failure(status: int, code: str) -> HTTPException:
 
 
 async def database(request: Request) -> AsyncIterator[AsyncSession]:
-    async with request.app.state.sessions() as session:
+    sessions = cast(SessionFactory, request.app.state.sessions)
+    async with sessions() as session:
         yield session
 
 
@@ -56,7 +58,15 @@ class Authenticated:
     session: Session | None = None
 
 
-async def resolve_session(db: AsyncSession, token: str, *, lock: bool = False) -> Authenticated:
+@dataclass
+class AuthenticatedSession:
+    user: User
+    session: Session
+
+
+async def resolve_session(
+    db: AsyncSession, token: str, *, lock: bool = False
+) -> AuthenticatedSession:
     if lock:
         owner = await db.scalar(
             select(Session.user_id).where(Session.token_hash == token_digest(token))
@@ -77,7 +87,7 @@ async def resolve_session(db: AsyncSession, token: str, *, lock: bool = False) -
     pair = result.one_or_none()
     if pair is None:
         raise failure(401, "session_invalid")
-    return Authenticated(user=pair[0], session=pair[1])
+    return AuthenticatedSession(user=pair[0], session=pair[1])
 
 
 async def current_user(
@@ -104,11 +114,14 @@ async def administrator(current: CurrentUser) -> Authenticated:
 Administrator = Annotated[Authenticated, Depends(administrator)]
 
 
-def emit(db: AsyncSession, subject: str, user: User, **data) -> None:
+type EventValue = str | int | bool | None | list[str]
+
+
+def emit(db: AsyncSession, subject: str, user: User, **data: EventValue) -> None:
     db.add(
         OutboxEvent(
             subject=f"workplace.users.{subject}",
-            payload={"user_id": str(user.id), **event_metadata(), **data},
+            payload=cast(JsonObject, {"user_id": str(user.id), **event_metadata(), **data}),
         )
     )
 
@@ -123,13 +136,18 @@ async def revoke_sessions(db: AsyncSession, user_id: UUID, reason: str) -> None:
     # its identity() rejects revoked sessions, including pending authorization codes.
 
 
-def revoke_access(db: AsyncSession, request: Request, user: User, subject: str, **scope) -> UUID:
+def revoke_access(
+    db: AsyncSession, request: Request, user: User, subject: str, **scope: list[str]
+) -> UUID:
+    correlation_id = getattr(request.state, "request_id", None)
+    if not isinstance(correlation_id, str):
+        correlation_id = None
     operation = AccessOperation(
         id=uuid4(),
         user_id=user.id,
         reason=subject,
-        scope=scope or {"all_buildings": True},
-        correlation_id=getattr(request.state, "request_id", None),
+        scope=cast(JsonObject, scope or {"all_buildings": True}),
+        correlation_id=correlation_id,
     )
     db.add(operation)
     emit(
@@ -165,7 +183,7 @@ def login_result(user: User, session: Session, token: str, settings: UsersSettin
 
 
 @router.post("/auth/login", response_model=LoginResult)
-async def login(body: LoginInput, db: Database, request: Request):
+async def login(body: LoginInput, db: Database, request: Request) -> LoginResult:
     # Serialize login against password resets and disable operations on this account.
     user = await db.scalar(
         select(User).where(User.login == body.login.strip().casefold()).with_for_update()
@@ -179,17 +197,19 @@ async def login(body: LoginInput, db: Database, request: Request):
     session = Session(user_id=user.id, token_hash=token_digest(token), expires_at=None)
     db.add(session)
     await db.commit()
-    return login_result(user, session, token, request.app.state.settings)
+    return login_result(user, session, token, cast(UsersSettings, request.app.state.settings))
 
 
 @router.post("/auth/refresh", response_model=LoginResult)
-async def refresh(body: TokenInput, db: Database, request: Request):
+async def refresh(body: TokenInput, db: Database, request: Request) -> LoginResult:
     current = await resolve_session(db, body.token, lock=True)
-    return login_result(current.user, current.session, body.token, request.app.state.settings)
+    return login_result(
+        current.user, current.session, body.token, cast(UsersSettings, request.app.state.settings)
+    )
 
 
 @router.post("/auth/introspect", response_model=Actor)
-async def introspect(body: TokenInput, db: Database):
+async def introspect(body: TokenInput, db: Database) -> Actor:
     current = await resolve_session(db, body.token)
     return Actor(
         user_id=current.user.id,
@@ -202,7 +222,7 @@ async def introspect(body: TokenInput, db: Database):
 
 
 @router.post("/auth/logout", status_code=204)
-async def logout(body: TokenInput, db: Database):
+async def logout(body: TokenInput, db: Database) -> Response:
     # Idempotent logout also works after an admin has already revoked this token.
     await db.execute(
         update(Session)
@@ -214,18 +234,20 @@ async def logout(body: TokenInput, db: Database):
 
 
 @router.get("/auth/me", response_model=UserView)
-async def me(current: CurrentUser):
+async def me(current: CurrentUser) -> User:
     return current.user
 
 
 @router.post("/auth/password", status_code=204)
-async def change_password(body: PasswordChange, current: CurrentUser, db: Database):
+async def change_password(body: PasswordChange, current: CurrentUser, db: Database) -> Response:
     user = await db.scalar(
         select(User)
         .where(User.id == current.user.id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
+    if user is None:
+        raise failure(404, "user_not_found")
     if not await asyncio.to_thread(verify_password, body.current_password, user.password_hash):
         raise failure(400, "current_password_incorrect")
     user.password_hash = await asyncio.to_thread(hash_password, body.password)
@@ -236,12 +258,12 @@ async def change_password(body: PasswordChange, current: CurrentUser, db: Databa
 
 
 @router.get("/users", response_model=list[UserView])
-async def list_users(admin: Administrator, db: Database):
+async def list_users(admin: Administrator, db: Database) -> Sequence[User]:
     return (await db.scalars(select(User).order_by(User.created_at, User.id))).all()
 
 
 @router.get("/users/{user_id}", response_model=UserView)
-async def user_facts(user_id: UUID, db: Database):
+async def user_facts(user_id: UUID, db: Database) -> User:
     user = await db.get(User, user_id)
     if user is None:
         raise failure(404, "user_not_found")
@@ -249,13 +271,13 @@ async def user_facts(user_id: UUID, db: Database):
 
 
 @router.post("/users/lookup", response_model=list[UserView])
-async def user_lookup(body: UserLookup, db: Database):
+async def user_lookup(body: UserLookup, db: Database) -> Sequence[User]:
     # Private facts for Gateway joins. User-facing visibility is enforced there.
     return (await db.scalars(select(User).where(User.id.in_(body.ids)))).all()
 
 
 @router.post("/users", response_model=UserView, status_code=201)
-async def create_user(body: UserCreate, admin: Administrator, db: Database):
+async def create_user(body: UserCreate, admin: Administrator, db: Database) -> User:
     user = User(
         **body.model_dump(exclude={"password"}),
         password_hash=await asyncio.to_thread(hash_password, body.password),
@@ -277,7 +299,7 @@ async def update_user(
     db: Database,
     request: Request,
     response: Response,
-):
+) -> User:
     user = await db.scalar(
         select(User)
         .where(User.id == user_id)
@@ -323,7 +345,9 @@ async def update_user(
 
 
 @router.post("/users/{user_id}/password", status_code=204)
-async def reset_password(user_id: UUID, body: PasswordReset, admin: Administrator, db: Database):
+async def reset_password(
+    user_id: UUID, body: PasswordReset, admin: Administrator, db: Database
+) -> Response:
     user = await db.scalar(
         select(User)
         .where(User.id == user_id)
@@ -339,19 +363,20 @@ async def reset_password(user_id: UUID, body: PasswordReset, admin: Administrato
     return Response(status_code=204)
 
 
-def create_application(settings: UsersSettings, engine: AsyncEngine | None = None):
+def create_application(settings: UsersSettings, engine: AsyncEngine | None = None) -> FastAPI:
     from workplace_users.mcp_auth import create_mcp_internal_router, create_oauth_app
     from workplace_users.operations import router as operations_router
 
     signing_key(settings)
 
     @asynccontextmanager
-    async def lifespan(application):
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         own_engine = engine is None
         db_engine = engine or create_async_engine(settings.database_url, pool_pre_ping=True)
-        application.state.sessions = async_sessionmaker(db_engine, expire_on_commit=False)
+        sessions = async_sessionmaker(db_engine, expire_on_commit=False)
+        application.state.sessions = sessions
         if settings.mcp_encryption_key is not None:
-            application.mount("/oauth", create_oauth_app(settings, application.state.sessions))
+            application.mount("/oauth", create_oauth_app(settings, sessions))
         try:
             yield
         finally:
@@ -364,7 +389,7 @@ def create_application(settings: UsersSettings, engine: AsyncEngine | None = Non
     application.include_router(create_mcp_internal_router())
 
     @application.exception_handler(RequestValidationError)
-    async def validation_error(request: Request, exc: RequestValidationError):
+    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
         # Pydantic's default includes rejected input, which may contain credentials.
         return JSONResponse(status_code=422, content={"detail": {"code": "validation_error"}})
 

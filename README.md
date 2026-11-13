@@ -127,11 +127,15 @@ Production cookies имеют `Secure`; `make prod-down` сохраняет да
 ```sh
 make test
 make lint
+make typecheck
 make format-check
 make smoke
 make prod-smoke
 sh scripts/prove-booking-guard.sh
 ```
+
+Область строгой проверки Python и границы данных описаны в
+[документе типизации](docs/implementation/python-typing.md).
 
 Тесты используют отдельный временный PostgreSQL/NATS, без dev/prod БД.
 Конкурентный тест отправляет 100 реальных HTTP-запросов к Booking и проверяет

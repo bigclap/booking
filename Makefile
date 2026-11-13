@@ -1,4 +1,4 @@
-.PHONY: up down ps logs build lock lint test smoke bootstrap shell migrate frontend format format-check
+.PHONY: up down ps logs build lock lint typecheck test smoke bootstrap shell migrate frontend format format-check
 COMPOSE_DEV = docker compose -f compose.dev.yaml
 COMPOSE_PROD = docker compose --env-file .env.prod -f compose.prod.yaml
 
@@ -33,6 +33,9 @@ lock:
 lint:
 	$(COMPOSE_DEV) run --rm --no-deps dev ruff check packages apps scripts
 	$(COMPOSE_DEV) run --rm --no-deps dev ruff format --check packages apps scripts
+
+typecheck:
+	$(COMPOSE_DEV) run --build --rm --no-deps dev mypy
 
 test:
 	sh scripts/test.sh pytest -q

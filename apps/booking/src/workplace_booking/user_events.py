@@ -5,20 +5,23 @@ owner of access policy; no disabled-user or building-grant state is copied here.
 """
 
 import asyncio
-import json
 import logging
 import signal
 from datetime import datetime
+from typing import cast
 from uuid import UUID
 
 import nats
 from fastapi import HTTPException
+from nats.aio.msg import Msg
 from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
+from pydantic import TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from workplace_platform.outbox import STREAM, ensure_stream
+from workplace_platform.typing import JsonObject, JsonValue, SessionFactory
 
 from workplace_booking.booking_models import Booking
 from workplace_booking.bookings import changed, locked_office
@@ -29,12 +32,21 @@ from workplace_booking.models import Building, OutboxEvent
 SUBJECT = "workplace.users.>"
 DURABLE = "BOOKING_USER_EVENTS"
 logger = logging.getLogger(__name__)
+EVENT_JSON = TypeAdapter(JsonObject)
 
 
-def event_parts(envelope: dict, subject: str | None):
+def event_string(value: JsonValue) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Users event field must be a string")
+    return value
+
+
+def event_parts(
+    envelope: JsonObject, subject: str | None
+) -> tuple[UUID, str, JsonObject, datetime]:
     if envelope.get("version", 1) != 1:
         raise ValueError("Unsupported Users event version")
-    event_id = UUID(envelope["id"])
+    event_id = UUID(event_string(envelope["id"]))
     event_subject = envelope["subject"]
     if not isinstance(event_subject, str) or not event_subject.startswith("workplace.users."):
         raise ValueError("Unexpected Users event subject")
@@ -43,13 +55,13 @@ def event_parts(envelope: dict, subject: str | None):
     data = envelope["data"]
     if not isinstance(data, dict):
         raise ValueError("Invalid event data")
-    cutoff = datetime.fromisoformat(envelope["occurred_at"])
+    cutoff = datetime.fromisoformat(event_string(envelope["occurred_at"]))
     if cutoff.tzinfo is None:
         raise ValueError("Users event timestamp must contain its timezone")
     return event_id, event_subject, data, cutoff
 
 
-async def lock_affected_office(session, office_id: str):
+async def lock_affected_office(session: AsyncSession, office_id: str) -> Building:
     try:
         return await locked_office(session, office_id)
     except HTTPException as exc:
@@ -65,10 +77,12 @@ async def lock_affected_office(session, office_id: str):
         return office
 
 
-async def handle_event(sessions, envelope: dict, *, subject: str | None = None) -> bool:
+async def handle_event(
+    sessions: SessionFactory, envelope: JsonObject, *, subject: str | None = None
+) -> bool:
     """Return False for a committed duplicate; all business writes commit with its inbox receipt."""
     event_id, event_subject, data, cutoff = event_parts(envelope, subject)
-    correlation = {
+    correlation: JsonObject = {
         key: data.get(key, envelope.get(key))
         for key in ("request_id", "trace_id", "correlation_id")
         if data.get(key, envelope.get(key)) is not None
@@ -78,8 +92,8 @@ async def handle_event(sessions, envelope: dict, *, subject: str | None = None) 
         "workplace.users.building_access_revoked",
     }
     owner_id = data.get("user_id")
-    scope = None
-    except_scope = None
+    scope: list[str] | None = None
+    except_scope: list[str] | None = None
     if relevant:
         if not isinstance(owner_id, str) or not owner_id or len(owner_id) > 1000:
             raise ValueError("Missing owner identifier")
@@ -92,9 +106,9 @@ async def handle_event(sessions, envelope: dict, *, subject: str | None = None) 
             ):
                 raise ValueError("Invalid revoked-building identifiers")
             if "building_ids" in data:
-                scope = identifiers
+                scope = cast(list[str], identifiers)
             else:
-                except_scope = identifiers
+                except_scope = cast(list[str], identifiers)
     async with sessions() as session:
         async with session.begin():
             receipt = await session.scalar(
@@ -107,6 +121,9 @@ async def handle_event(sessions, envelope: dict, *, subject: str | None = None) 
                 return False
             if not relevant:
                 return True
+            cancellation_reason = data.get("reason", "access_revoked")
+            if cancellation_reason is not None and not isinstance(cancellation_reason, str):
+                raise ValueError("Invalid cancellation reason")
             # A durable replay keeps the original effective time, even after a long outage.
             # This is a domain command cutoff, not cached authorization state.
             current = cutoff
@@ -147,7 +164,7 @@ async def handle_event(sessions, envelope: dict, *, subject: str | None = None) 
                         cancelled_count += 1
                     booking.status = "cancelled"
                     booking.cancelled_at = current
-                    booking.cancellation_reason = data.get("reason", "access_revoked")
+                    booking.cancellation_reason = cancellation_reason
                     booking.revision += 1
                     await changed(session, booking, "access_revoked", correlation)
             if data.get("operation_id") is not None:
@@ -156,7 +173,7 @@ async def handle_event(sessions, envelope: dict, *, subject: str | None = None) 
                         subject="workplace.booking.access_revocation_completed",
                         payload={
                             **correlation,
-                            "operation_id": str(UUID(data["operation_id"])),
+                            "operation_id": str(UUID(event_string(data["operation_id"]))),
                             "user_id": owner_id,
                             "cancelled_count": cancelled_count,
                             "terminated_count": terminated_count,
@@ -167,9 +184,9 @@ async def handle_event(sessions, envelope: dict, *, subject: str | None = None) 
     return True
 
 
-async def consume_message(message, sessions) -> bool:
+async def consume_message(message: Msg, sessions: SessionFactory) -> bool:
     try:
-        envelope = json.loads(message.data)
+        envelope = EVENT_JSON.validate_json(message.data)
         await handle_event(sessions, envelope, subject=message.subject)
         # The SQL context has committed before the broker receives acknowledgement.
         await message.ack_sync(timeout=5)
@@ -180,7 +197,7 @@ async def consume_message(message, sessions) -> bool:
         return False
 
 
-async def run():
+async def run() -> None:
     settings = BookingSettings()
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL is required for the Users-event worker")

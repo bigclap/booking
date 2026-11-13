@@ -14,6 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from workplace_platform.typing import JsonObject, JsonValue
 
 from workplace_assistant.models import Base
 
@@ -34,13 +35,13 @@ class GenerationRequest(Base):
     user_message_id: Mapped[UUID] = mapped_column(ForeignKey("chat_messages.id"))
     idempotency_key: Mapped[str] = mapped_column(String(128))
     fingerprint: Mapped[str] = mapped_column(String(64))
-    context: Mapped[dict] = mapped_column(JSONB)
+    context: Mapped[JsonObject] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     lease_token: Mapped[UUID | None] = mapped_column()
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    run_messages: Mapped[list | None] = mapped_column(JSONB)
-    result: Mapped[dict | None] = mapped_column(JSONB)
+    run_messages: Mapped[list[JsonValue] | None] = mapped_column(JSONB)
+    result: Mapped[JsonObject | None] = mapped_column(JSONB)
     error_code: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp()

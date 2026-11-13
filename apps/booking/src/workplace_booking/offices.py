@@ -8,13 +8,13 @@ import re
 from copy import deepcopy
 from datetime import UTC, datetime, time
 from math import isfinite
-from typing import Any
 from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from workplace_platform.correlation import event_metadata
+from workplace_platform.typing import JsonObject
 
 from workplace_booking.models import Building, Floor, OutboxEvent, Resource, WorkingHours
 from workplace_booking.schemas import (
@@ -25,6 +25,7 @@ from workplace_booking.schemas import (
     OfficePlanInput,
     OfficeSettingsInput,
 )
+from workplace_booking.types import HoursDocument, ProjectedResource
 
 
 def invalid_document() -> HTTPException:
@@ -75,14 +76,14 @@ async def office_document(session: AsyncSession, building: Building) -> OfficeDo
     )
 
 
-def default_hours() -> dict[str, dict[str, Any]]:
+def default_hours() -> HoursDocument:
     return {
         day: {"enabled": weekday < 5, "start": "09:00", "end": "19:00"}
         for weekday, day in enumerate(DAYS)
     }
 
 
-async def replace_hours(session: AsyncSession, building: Building, hours: dict[str, Any]) -> None:
+async def replace_hours(session: AsyncSession, building: Building, hours: HoursDocument) -> None:
     building.hours_document = deepcopy(hours)
     await session.execute(delete(WorkingHours).where(WorkingHours.building_id == building.id))
     for weekday, day in enumerate(DAYS):
@@ -191,7 +192,10 @@ async def update_settings(
         await replace_hours(
             session,
             building,
-            {day: value.model_dump() for day, value in body.hours_document.items()},
+            {
+                day: {"enabled": value.enabled, "start": value.start, "end": value.end}
+                for day, value in body.hours_document.items()
+            },
         )
         await review_changed_conditions(session, office_id)
         await record_change(session, building, "settings")
@@ -199,19 +203,19 @@ async def update_settings(
     return result
 
 
-def _identifier(value: Any) -> str:
+def _identifier(value: object) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 1000:
         raise invalid_document()
     return value
 
 
-def _name(value: Any) -> str:
+def _name(value: object) -> str:
     if not isinstance(value, str) or len(value) > 1000:
         raise invalid_document()
     return value
 
 
-def _number(value, lower=-100000, upper=100000):
+def _number(value: object, lower: int = -100000, upper: int = 100000) -> None:
     if (
         isinstance(value, bool)
         or not isinstance(value, int | float)
@@ -221,7 +225,7 @@ def _number(value, lower=-100000, upper=100000):
         raise invalid_document()
 
 
-def validate_element(element):
+def validate_element(element: JsonObject) -> None:
     """Validate present geometry without dropping forward-compatible extension fields."""
     for key in ("x", "y"):
         if key in element:
@@ -262,7 +266,19 @@ def validate_element(element):
             _number(point.get("y"))
 
 
-def validate_plan(office_id: str, documents: list[dict[str, Any]]) -> set[str]:
+def plan_elements(document: JsonObject) -> list[JsonObject]:
+    value = document.get("elements", [])
+    if not isinstance(value, list):
+        raise invalid_document()
+    elements: list[JsonObject] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise invalid_document()
+        elements.append(item)
+    return elements
+
+
+def validate_plan(office_id: str, documents: list[JsonObject]) -> set[str]:
     """Check identity, geometry and explicit relations at the owning storage boundary."""
     identifiers = {office_id}
     for document in documents:
@@ -279,13 +295,12 @@ def validate_plan(office_id: str, documents: list[dict[str, Any]]) -> set[str]:
                 or not 1 <= value <= 20000
             ):
                 raise invalid_document()
-        elements = document.get("elements")
-        if not isinstance(elements, list) or len(elements) > 10000:
+        raw_elements = document.get("elements")
+        if not isinstance(raw_elements, list) or len(raw_elements) > 10000:
             raise invalid_document()
-        by_id = {}
+        elements = plan_elements(document)
+        by_id: dict[str, JsonObject] = {}
         for element in elements:
-            if not isinstance(element, dict):
-                raise invalid_document()
             element_id = _identifier(element.get("id"))
             if element_id in identifiers:
                 raise invalid_document()
@@ -297,11 +312,14 @@ def validate_plan(office_id: str, documents: list[dict[str, Any]]) -> set[str]:
             by_id[element_id] = element
         background = document.get("background")
         if background is not None:
-            if not isinstance(background, dict) or not isinstance(background.get("src"), str):
+            if not isinstance(background, dict):
+                raise invalid_document()
+            source = background.get("src")
+            if not isinstance(source, str):
                 raise invalid_document()
             if not re.fullmatch(
                 r"data:image/(png|jpeg|jpg|webp|gif|avif);base64,[a-zA-Z0-9+/=\s]+",
-                background["src"],
+                source,
             ):
                 raise invalid_document()
             for key in ("x", "y"):
@@ -313,7 +331,7 @@ def validate_plan(office_id: str, documents: list[dict[str, Any]]) -> set[str]:
             if "opacity" in background:
                 _number(background["opacity"], 0, 1)
         for element in elements:
-            seen = {element["id"]}
+            seen = {_identifier(element["id"])}
             parent_id = element.get("roomId")
             while parent_id is not None:
                 if not isinstance(parent_id, str):
@@ -326,21 +344,21 @@ def validate_plan(office_id: str, documents: list[dict[str, Any]]) -> set[str]:
     return identifiers
 
 
-def project_resources(document: dict[str, Any]) -> list[dict[str, Any]]:
+def project_resources(document: JsonObject) -> list[ProjectedResource]:
     """Same eligibility and room ancestry as frontend bookingModel.getResources."""
-    elements = document["elements"]
-    by_id = {element["id"]: element for element in elements}
+    elements = plan_elements(document)
+    by_id = {_identifier(element["id"]): element for element in elements}
 
-    def ancestors(element):
-        result = []
+    def ancestors(element: JsonObject) -> list[JsonObject]:
+        result: list[JsonObject] = []
         parent_id = element.get("roomId")
         while parent_id is not None:
-            parent = by_id[parent_id]
+            parent = by_id[_identifier(parent_id)]
             result.append(parent)
             parent_id = parent.get("roomId")
         return result
 
-    def workplace(element):
+    def workplace(element: JsonObject) -> bool:
         return element["kind"] == "desk" or (
             element["kind"] == "furniture"
             and element.get("resourceType") == "workplace"
@@ -362,16 +380,20 @@ def project_resources(document: dict[str, Any]) -> list[dict[str, Any]]:
             )
         )
     ]
-    selected_ids = {element["id"] for element in selected}
+    selected_ids = {_identifier(element["id"]) for element in selected}
     return [
         {
-            "id": element["id"],
-            "floor_id": document["id"],
-            "name": element["name"],
+            "id": _identifier(element["id"]),
+            "floor_id": _identifier(document["id"]),
+            "name": _name(element["name"]),
             "kind": "meeting_room" if element["kind"] == "room" else "workstation",
             "shared_booking": element["kind"] == "room" and element.get("shared") is True,
             "parent_room_id": next(
-                (parent["id"] for parent in ancestors(element) if parent["id"] in selected_ids),
+                (
+                    _identifier(parent["id"])
+                    for parent in ancestors(element)
+                    if _identifier(parent["id"]) in selected_ids
+                ),
                 None,
             ),
         }
@@ -382,11 +404,11 @@ def project_resources(document: dict[str, Any]) -> list[dict[str, Any]]:
 async def check_identifiers(
     session: AsyncSession,
     office_id: str,
-    documents: list[dict[str, Any]],
+    documents: list[JsonObject],
     identifiers: set[str],
 ) -> None:
     """Never transfer identities from another office or reuse a floor as an element."""
-    incoming_floor_ids = {document["id"] for document in documents}
+    incoming_floor_ids = {_identifier(document["id"]) for document in documents}
     all_buildings = set((await session.scalars(select(Building.id))).all())
     if (identifiers - {office_id}) & all_buildings:
         raise id_conflict()
@@ -397,9 +419,9 @@ async def check_identifiers(
             occupied = {floor.id}
             if floor.plan_document:
                 occupied.update(
-                    element["id"]
-                    for element in floor.plan_document.get("elements", [])
-                    if isinstance(element, dict) and isinstance(element.get("id"), str)
+                    _identifier(element["id"])
+                    for element in plan_elements(floor.plan_document)
+                    if isinstance(element.get("id"), str)
                 )
             if occupied & identifiers:
                 raise id_conflict()
@@ -416,7 +438,7 @@ async def check_identifiers(
 async def replace_plan_documents(
     session: AsyncSession,
     office_id: str,
-    documents: list[dict[str, Any]],
+    documents: list[JsonObject],
     identifiers: set[str],
 ) -> None:
     """Apply a validated plan inside the caller's transaction and identity lock."""
@@ -432,16 +454,16 @@ async def replace_plan_documents(
     ).all()
     resources_by_id = {resource.id: resource for resource in resources}
     removed_at = datetime.now(UTC)
-    for floor in floors:
-        floor.deleted_at = removed_at
-    for resource in resources:
-        resource.deleted_at = removed_at
+    for old_floor in floors:
+        old_floor.deleted_at = removed_at
+    for old_resource in resources:
+        old_resource.deleted_at = removed_at
     for position, document in enumerate(documents):
-        floor = floors_by_id.get(document["id"])
+        floor = floors_by_id.get(_identifier(document["id"]))
         if floor is None:
-            floor = Floor(id=document["id"], building_id=office_id)
+            floor = Floor(id=_identifier(document["id"]), building_id=office_id)
             session.add(floor)
-        floor.name = document["name"]
+        floor.name = _name(document["name"])
         floor.position = position
         floor.plan_document = document
         floor.deleted_at = None

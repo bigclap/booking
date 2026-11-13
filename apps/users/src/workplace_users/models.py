@@ -7,6 +7,9 @@ from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, 
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from workplace_platform.outbox import OutboxMixin
+from workplace_platform.typing import JsonObject
+
+from workplace_users.schemas import Role
 
 
 class Base(DeclarativeBase):
@@ -26,7 +29,7 @@ class User(Base):
     first_name: Mapped[str] = mapped_column(String(100))
     last_name: Mapped[str] = mapped_column(String(100))
     password_hash: Mapped[str] = mapped_column(String(255))
-    role: Mapped[str] = mapped_column(String(16), default="employee")
+    role: Mapped[Role] = mapped_column(String(16), default="employee")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     building_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -56,7 +59,7 @@ class AccessOperation(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     reason: Mapped[str] = mapped_column(String(80))
-    scope: Mapped[dict] = mapped_column(JSONB)
+    scope: Mapped[JsonObject] = mapped_column(JSONB)
     correlation_id: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(20), default="pending")
     cancelled_count: Mapped[int] = mapped_column(Integer, default=0)

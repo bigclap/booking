@@ -5,13 +5,15 @@ case applies a recursive key conversion to arbitrary plan data or dictionary key
 """
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
     StrictBool,
     StrictInt,
     StrictStr,
@@ -33,7 +35,7 @@ class _WireModel(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def reject_reserved_snake_case(cls, value: Any):
+    def reject_reserved_snake_case(cls, value: object) -> object:
         if isinstance(value, dict):
             for name, field in cls.model_fields.items():
                 if field.alias and name != field.alias and name in value:
@@ -45,8 +47,12 @@ class _DocumentModel(_WireModel):
     model_config = ConfigDict(extra="allow", validate_by_alias=True, validate_by_name=False)
 
     @model_serializer(mode="wrap")
-    def serialize_extensions(self, handler, info):
-        result = handler(self)
+    def serialize_extensions(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo):
+        # type: (...) -> dict[str, object]
+        # A runtime return annotation would replace the model's public JSON schema
+        # with a generic mapping. The type comment keeps this wrap transparent.
+        # Pydantic's model serializer produces this model's field mapping.
+        result: dict[str, object] = handler(self)
         # Known missing optional fields may be omitted, but an extension's explicit
         # null is part of the opaque document and must survive a save/load cycle.
         if info.exclude_none and self.model_extra:
@@ -80,11 +86,11 @@ class EquipmentItem(_DocumentModel):
 
     @field_validator("quantity", mode="before")
     @classmethod
-    def integer_quantity(cls, value: Any):
+    def integer_quantity(cls, value: object) -> int:
         return _integer_count(value)
 
 
-def _integer_count(value: Any) -> int:
+def _integer_count(value: object) -> int:
     # JS Number.isInteger accepts 2.0 but rejects strings and booleans.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("Must be an integer number")
@@ -130,19 +136,19 @@ class PlanElementDocument(_DocumentModel):
         mode="before",
     )
     @classmethod
-    def optional_fields_are_not_null(cls, value: Any):
+    def optional_fields_are_not_null(cls, value: object) -> object:
         if value is None:
             raise ValueError("Omit an absent optional field instead of sending null")
         return value
 
     @field_validator("room_id")
     @classmethod
-    def parent_nonblank(cls, value: str | None):
+    def parent_nonblank(cls, value: str | None) -> str | None:
         return _nonblank(value) if value is not None else value
 
     @field_validator("seats", mode="before")
     @classmethod
-    def integer_seats(cls, value: Any):
+    def integer_seats(cls, value: object) -> int | None:
         if value is None:
             return value
         return _integer_count(value)
@@ -164,7 +170,7 @@ class BackgroundDocument(_DocumentModel):
 
     @field_validator("x", "y", "width", "height", mode="before")
     @classmethod
-    def optional_geometry_is_not_null(cls, value: Any):
+    def optional_geometry_is_not_null(cls, value: object) -> object:
         if value is None:
             raise ValueError("Omit absent geometry instead of sending null")
         return value
@@ -182,13 +188,13 @@ class FloorDocument(_DocumentModel):
 
     @field_validator("background", mode="before")
     @classmethod
-    def optional_background_is_not_null(cls, value: Any):
+    def optional_background_is_not_null(cls, value: object) -> object:
         if value is None:
             raise ValueError("Omit an absent background instead of sending null")
         return value
 
     @model_validator(mode="after")
-    def validate_parents(self):
+    def validate_parents(self) -> Self:
         by_id = {element.id: element for element in self.elements}
         if len(by_id) != len(self.elements):
             raise ValueError("Element identifiers must be unique")
@@ -228,7 +234,7 @@ class WorkingDay(_WireModel):
     end: ClockTime
 
     @model_validator(mode="after")
-    def ordered_working_interval(self):
+    def ordered_working_interval(self) -> Self:
         if self.enabled and self.start >= self.end:
             raise ValueError("The working interval must end after it starts, within one date")
         return self
@@ -251,20 +257,20 @@ class OfficeDocument(_DocumentModel):
 
     @field_validator("updated_at", mode="before")
     @classmethod
-    def timestamp_is_text_or_internal_datetime(cls, value: Any):
+    def timestamp_is_text_or_internal_datetime(cls, value: object) -> str | datetime:
         if not isinstance(value, (str, datetime)):
             raise ValueError("updatedAt must be an ISO timestamp")
         return value
 
     @field_validator("version", mode="before")
     @classmethod
-    def exact_version(cls, value: Any):
+    def exact_version(cls, value: object) -> object:
         if isinstance(value, bool) or value != 1:
             raise ValueError("Unsupported office document version")
         return value
 
     @model_validator(mode="after")
-    def unique_identifiers(self):
+    def unique_identifiers(self) -> Self:
         validate_floor_graph(self.floors, self.id)
         return self
 
@@ -275,7 +281,7 @@ class OfficeCreate(_WireModel):
 
     @field_validator("name", "address", mode="before")
     @classmethod
-    def trim_text(cls, value: Any):
+    def trim_text(cls, value: object) -> str:
         if not isinstance(value, str):
             raise ValueError("Must be text")
         return value.strip()
@@ -291,11 +297,11 @@ class OfficePlanUpdate(_WireModel):
     revision: Annotated[StrictInt, Field(ge=1)] | None = None
 
     @model_validator(mode="after")
-    def unique_identifiers(self):
+    def unique_identifiers(self) -> Self:
         validate_floor_graph(self.floors)
         return self
 
-    def validate_for_office(self, office_id: str):
+    def validate_for_office(self, office_id: str) -> Self:
         validate_floor_graph(self.floors, office_id)
         return self
 

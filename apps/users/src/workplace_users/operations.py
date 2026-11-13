@@ -1,27 +1,52 @@
 """Durable outcomes of Users' access revocation commands, queried by Gateway admin UI."""
 
-from typing import Annotated
+from collections.abc import AsyncIterator
+from datetime import datetime
+from typing import Annotated, TypedDict, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from workplace_platform.auth import require_internal_key
+from workplace_platform.typing import JsonObject, SessionFactory
 
 from workplace_users.models import AccessOperation, OutboxEvent
 
 
-async def database(request: Request):
-    async with request.app.state.sessions() as session:
+class PublicationView(TypedDict):
+    published_at: datetime | None
+    attempts: int
+    last_error: str | None
+
+
+class AccessOperationView(TypedDict):
+    id: str
+    user_id: str
+    reason: str
+    scope: JsonObject
+    correlation_id: str | None
+    status: str
+    created_at: datetime
+    completed_at: datetime | None
+    cancelled_count: int
+    terminated_count: int
+    publication: PublicationView | None
+
+
+async def database(request: Request) -> AsyncIterator[AsyncSession]:
+    sessions = cast(SessionFactory, request.app.state.sessions)
+    async with sessions() as session:
         yield session
 
 
-Database = Annotated[object, Depends(database)]
+Database = Annotated[AsyncSession, Depends(database)]
 router = APIRouter(
     prefix="/internal/access-operations", dependencies=[Depends(require_internal_key)]
 )
 
 
-async def view(db, operation):
+async def view(db: AsyncSession, operation: AccessOperation) -> AccessOperationView:
     publication = await db.scalar(
         select(OutboxEvent)
         .where(OutboxEvent.payload["operation_id"].as_string() == str(operation.id))
@@ -54,7 +79,7 @@ async def list_operations(
     db: Database,
     user_id: UUID | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
-):
+) -> list[AccessOperationView]:
     statement = select(AccessOperation).order_by(
         AccessOperation.created_at.desc(), AccessOperation.id.desc()
     )
@@ -65,7 +90,7 @@ async def list_operations(
 
 
 @router.get("/{operation_id}")
-async def get_operation(operation_id: UUID, db: Database):
+async def get_operation(operation_id: UUID, db: Database) -> AccessOperationView:
     operation = await db.get(AccessOperation, operation_id)
     if operation is None:
         raise HTTPException(404, detail={"code": "access_operation_not_found"})

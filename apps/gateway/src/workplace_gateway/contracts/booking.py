@@ -1,7 +1,7 @@
 from datetime import date, datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictInt, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -33,16 +33,16 @@ class ClientBooking(BaseModel):
     revision: int = Field(ge=1)
     needs_review: bool
     review_reasons: list[str] = Field(default_factory=list)
-    resource_snapshot: dict = Field(default_factory=dict)
+    resource_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
     cancellation_reason: str | None = None
-    warnings: list[dict] = Field(default_factory=list)
+    warnings: list[dict[str, JsonValue]] = Field(default_factory=list)
     starts_at: str | None = None
     ends_at: str | None = None
     scheduled_ends_at: str | None = None
     cancelled_at: str | None = None
 
     @model_validator(mode="after")
-    def valid_range(self):
+    def valid_range(self) -> Self:
         date.fromisoformat(self.date)
         if self.start >= self.end:
             raise ValueError("Окончание должно быть позже начала")
@@ -60,7 +60,7 @@ class BookingCreate(BaseModel):
     owner_id: str | None = Field(default=None, min_length=1, max_length=1000)
 
     @model_validator(mode="after")
-    def valid_date_and_order(self):
+    def valid_date_and_order(self) -> Self:
         date.fromisoformat(self.date)
         if self.start >= self.end:
             raise ValueError("Окончание должно быть позже начала")
@@ -79,7 +79,7 @@ class BookingUpdate(BaseModel):
     revision: StrictInt | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
-    def required_fields_not_null(self):
+    def required_fields_not_null(self) -> Self:
         for field in self.model_fields_set - {"participants"}:
             if getattr(self, field) is None:
                 raise ValueError(f"{field} cannot be null")

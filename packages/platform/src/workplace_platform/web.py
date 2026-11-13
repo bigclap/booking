@@ -2,16 +2,20 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable
-from contextlib import AsyncExitStack, asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from typing import Protocol, cast
 from uuid import uuid4
 
 import httpx
 import nats
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from nats.aio.client import Client
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 from workplace_platform.config import ServiceSettings
 from workplace_platform.correlation import request_id as current_request_id
@@ -22,10 +26,18 @@ from workplace_platform.rpc import SERVICES, RpcServer, ServiceTransport
 logger = logging.getLogger("workplace.http")
 
 
+class PlatformState(Protocol):
+    settings: ServiceSettings
+    http_client: httpx.AsyncClient
+    health_engine: AsyncEngine | None
+    nats: Client
+    readiness_urls: dict[str, str]
+
+
 def create_app(
     name: str,
     settings: ServiceSettings,
-    lifespan: Callable | None = None,
+    lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None,
     *,
     docs_prefix: str = "",
 ) -> FastAPI:
@@ -33,24 +45,25 @@ def create_app(
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     @asynccontextmanager
-    async def platform_lifespan(app: FastAPI):
+    async def platform_lifespan(app: FastAPI) -> AsyncIterator[None]:
+        state = cast(PlatformState, app.state)
         async with AsyncExitStack() as stack:
             connection = None
             if settings.internal_rpc_enabled:
                 connection = await nats.connect(settings.nats_url, max_reconnect_attempts=-1)
                 stack.push_async_callback(connection.close)
-                app.state.nats = connection
-            app.state.http_client = await stack.enter_async_context(
+                state.nats = connection
+            state.http_client = await stack.enter_async_context(
                 httpx.AsyncClient(
                     timeout=settings.request_timeout_seconds,
                     transport=ServiceTransport(connection, settings) if connection else None,
                     cookies=stateless_cookies(),
                 )
             )
-            app.state.health_engine = None
+            state.health_engine = None
             if settings.database_url:
                 engine = create_async_engine(settings.database_url, pool_pre_ping=True)
-                app.state.health_engine = engine
+                state.health_engine = engine
                 stack.push_async_callback(engine.dispose)
             if lifespan is not None:
                 await stack.enter_async_context(lifespan(app))
@@ -70,10 +83,12 @@ def create_app(
         redoc_url=f"{docs_prefix}/redoc",
         openapi_url=f"{docs_prefix}/openapi.json",
     )
-    app.state.settings = settings
+    state = cast(PlatformState, app.state)
+    state.settings = settings
+    state.readiness_urls = {}
 
     @app.middleware("http")
-    async def correlation(request: Request, call_next):
+    async def correlation(request: Request, call_next: RequestResponseEndpoint) -> Response:
         candidate = request.headers.get("x-request-id", "")
         request_id = candidate if re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", candidate) else str(uuid4())
         request.state.request_id = request_id
@@ -110,16 +125,18 @@ def create_app(
         return response
 
     @app.get("/health/live", tags=["health"])
-    async def live():
+    async def live() -> dict[str, str]:
         return {"status": "ok", "service": name}
 
     @app.get("/health/ready", tags=["health"])
-    async def ready():
-        checks = {}
+    async def ready() -> JSONResponse:
+        checks: dict[str, str] = {}
         if settings.database_url:
             try:
-                async with app.state.health_engine.connect() as connection:
-                    await connection.execute(text("SELECT 1"))
+                if state.health_engine is None:
+                    raise RuntimeError("Database health engine is not initialized")
+                async with state.health_engine.connect() as db_connection:
+                    await db_connection.execute(text("SELECT 1"))
                 checks["postgres"] = "ok"
             except Exception:
                 checks["postgres"] = "unavailable"
@@ -138,9 +155,9 @@ def create_app(
         finally:
             if connection is not None:
                 await connection.close()
-        for dependency, url in getattr(app.state, "readiness_urls", {}).items():
+        for dependency, url in state.readiness_urls.items():
             try:
-                result = await app.state.http_client.get(url)
+                result = await state.http_client.get(url)
                 checks[dependency] = "ok" if result.status_code == 200 else "unavailable"
             except httpx.HTTPError:
                 checks[dependency] = "unavailable"

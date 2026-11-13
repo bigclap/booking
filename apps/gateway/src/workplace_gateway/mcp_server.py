@@ -8,10 +8,9 @@ confirmation form; there is deliberately no direct booking-creation tool.
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, date, datetime
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Literal, Protocol
 from urllib.parse import urlsplit
-from uuid import UUID
 
 import httpx
 from fastapi import HTTPException
@@ -22,14 +21,14 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp_types import ToolAnnotations
-from pydantic import AnyHttpUrl, BaseModel, ValidationError
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, StrictInt, ValidationError
 from starlette.applications import Starlette
 from workplace_platform.jwt_tokens import AccessContext, TokenUser
 
+from workplace_gateway.config import GatewaySettings
 from workplace_gateway.errors import MESSAGES
+from workplace_gateway.facade import FacadeCallbacks, PublicObject
 
-FacadeCallback = Callable[..., Awaitable[Any]]
-FacadeCallbacks = Mapping[str, FacadeCallback]
 REQUIRED_CALLBACKS = frozenset(
     {
         "list_offices",
@@ -44,13 +43,35 @@ REQUIRED_CALLBACKS = frozenset(
 logger = logging.getLogger(__name__)
 
 
+class MCPHTTPClient(Protocol):
+    async def post(
+        self, url: str, *, headers: Mapping[str, str], json: object
+    ) -> httpx.Response: ...
+
+
+class _Introspection(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    user: TokenUser
+    expires_at: StrictInt
+    resource: str
+    scopes: list[str]
+    session_id: str
+    client_id: str
+
+
 class UsersMCPTokenVerifier(TokenVerifier):
-    def __init__(self, settings, resource: str, http_client: httpx.AsyncClient | None = None):
+    def __init__(
+        self,
+        settings: GatewaySettings,
+        resource: str,
+        http_client: MCPHTTPClient | None = None,
+    ) -> None:
         self.settings = settings
         self.resource = resource
         self.http_client = http_client
 
-    async def _introspect(self, client: httpx.AsyncClient, token: str) -> httpx.Response:
+    async def _introspect(self, client: MCPHTTPClient, token: str) -> httpx.Response:
         return await client.post(
             self.settings.users_url + "/internal/mcp/introspect",
             headers={"X-Internal-Key": self.settings.internal_api_key.get_secret_value()},
@@ -69,32 +90,27 @@ class UsersMCPTokenVerifier(TokenVerifier):
             if response.status_code in {401, 403}:
                 return None
             response.raise_for_status()
-            data = response.json()
-            user = TokenUser.model_validate(data["user"])
-            expires_at = data["expires_at"]
+            data = _Introspection.model_validate(response.json())
+            user = data.user
+            expires_at = data.expires_at
             if (
                 not user.active
-                or data["resource"] != self.resource
-                or not isinstance(expires_at, int)
-                or isinstance(expires_at, bool)
+                or data.resource != self.resource
                 or expires_at <= time.time()
-                or not isinstance(data["scopes"], list)
-                or "booking" not in data["scopes"]
-                or not isinstance(data["session_id"], str)
-                or not data["session_id"]
-                or not isinstance(data["client_id"], str)
-                or not data["client_id"]
+                or "booking" not in data.scopes
+                or not data.session_id
+                or not data.client_id
             ):
                 return None
             current = AccessContext(
                 user=user,
-                session_id=data["session_id"],
+                session_id=data.session_id,
                 session_expires_at=None,
                 access_expires_at=datetime.fromtimestamp(expires_at, UTC),
             )
             return AccessToken(
                 token=token,
-                client_id=data["client_id"],
+                client_id=data.client_id,
                 subject=user.id,
                 scopes=["booking"],
                 expires_at=expires_at,
@@ -107,25 +123,11 @@ class UsersMCPTokenVerifier(TokenVerifier):
             return None
 
 
-def _public_json(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json", by_alias=True, exclude_none=True)
-    if isinstance(value, dict):
-        return {key: _public_json(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_public_json(item) for item in value]
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, UUID):
-        return str(value)
-    return value
-
-
 def create_mcp_server(
-    settings,
+    settings: GatewaySettings,
     facade_callbacks: FacadeCallbacks,
     *,
-    http_client: httpx.AsyncClient | None = None,
+    http_client: MCPHTTPClient | None = None,
 ) -> tuple[MCPServer, Starlette]:
     """Return the SDK server and ASGI app; the host must run session_manager.run().
 
@@ -175,12 +177,12 @@ def create_mcp_server(
             raise ToolError("Сессия завершена. Подключитесь повторно.")
         return current
 
-    async def invoke(name: str, **arguments):
+    async def invoke[T](name: str, operation: Callable[[AccessContext], Awaitable[T]]) -> T:
         current = current_user()
         try:
-            return _public_json(await facade_callbacks[name](current, **arguments))
+            return await operation(current)
         except HTTPException as exc:
-            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            detail: PublicObject = exc.detail if isinstance(exc.detail, dict) else {}
             code = detail.get("code", "request_failed")
             if not isinstance(code, str):
                 code = "request_failed"
@@ -193,19 +195,28 @@ def create_mcp_server(
     mutation = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False)
 
     @server.tool(annotations=readonly)
-    async def list_offices() -> list[dict[str, Any]]:
+    async def list_offices() -> list[dict[str, object]]:
         """Показать офисы, доступные подключённому сотруднику."""
-        return await invoke("list_offices")
+        return await invoke("list_offices", facade_callbacks["list_offices"])
 
     @server.tool(annotations=readonly)
-    async def get_office(office_id: str) -> dict[str, Any]:
+    async def get_office(office_id: str) -> dict[str, object]:
         """Получить актуальный план офиса, этажи, ресурсы и рабочие часы."""
-        return await invoke("get_office", office_id=office_id)
+        return await invoke(
+            "get_office",
+            lambda current: facade_callbacks["get_office"](current, office_id=office_id),
+        )
 
     @server.tool(annotations=readonly)
-    async def list_bookings(office_id: str, date: str | None = None) -> list[dict[str, Any]]:
+    async def list_bookings(office_id: str, date: str | None = None) -> list[dict[str, object]]:
         """Показать видимые брони офиса; дата YYYY-MM-DD задаётся по Москве."""
-        return await invoke("list_bookings", office_id=office_id, date=date)
+        records = await invoke(
+            "list_bookings",
+            lambda current: facade_callbacks["list_bookings"](
+                current, office_id=office_id, date=date
+            ),
+        )
+        return [row.model_dump(mode="json", by_alias=True, exclude_none=True) for row in records]
 
     @server.tool(annotations=readonly)
     async def availability(
@@ -215,19 +226,22 @@ def create_mcp_server(
         end: int | None = None,
         kind: Literal["any", "workstation", "meeting_room"] = "any",
         participants: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Подобрать ресурсы. start/end — минуты от полуночи по Москве.
 
         Без полного интервала available=null, поэтому свободное время не выдумывается.
         """
         return await invoke(
             "availability",
-            office_id=office_id,
-            date=date,
-            start=start,
-            end=end,
-            kind=kind,
-            participants=participants,
+            lambda current: facade_callbacks["availability"](
+                current,
+                office_id=office_id,
+                date=date,
+                start=start,
+                end=end,
+                kind=kind,
+                participants=participants,
+            ),
         )
 
     @server.tool(annotations=readonly)
@@ -239,7 +253,7 @@ def create_mcp_server(
         start: int | None = None,
         end: int | None = None,
         participants: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Подготовить предложение и ссылку на форму подтверждения.
 
         Не создаёт бронь и не удерживает ресурс. Прошедшая дата остаётся незаполненной.
@@ -248,13 +262,16 @@ def create_mcp_server(
         """
         return await invoke(
             "prepare_booking",
-            office_id=office_id,
-            resource_id=resource_id,
-            floor_id=floor_id,
-            date=date,
-            start=start,
-            end=end,
-            participants=participants,
+            lambda current: facade_callbacks["prepare_booking"](
+                current,
+                office_id=office_id,
+                resource_id=resource_id,
+                floor_id=floor_id,
+                date=date,
+                start=start,
+                end=end,
+                participants=participants,
+            ),
         )
 
     @server.tool(annotations=mutation)
@@ -268,22 +285,25 @@ def create_mcp_server(
         resource_id: str | None = None,
         floor_id: str | None = None,
         participants: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Изменить только собственную бронь, включая для администратора.
 
         revision — версия из списка броней; сервер повторно проверяет состояние и занятость.
         """
         return await invoke(
             "update_booking",
-            office_id=office_id,
-            booking_id=booking_id,
-            revision=revision,
-            date=date,
-            start=start,
-            end=end,
-            resource_id=resource_id,
-            floor_id=floor_id,
-            participants=participants,
+            lambda current: facade_callbacks["update_booking"](
+                current,
+                office_id=office_id,
+                booking_id=booking_id,
+                revision=revision,
+                date=date,
+                start=start,
+                end=end,
+                resource_id=resource_id,
+                floor_id=floor_id,
+                participants=participants,
+            ),
         )
 
     @server.tool(annotations=mutation)
@@ -291,13 +311,16 @@ def create_mcp_server(
         office_id: str,
         booking_id: str,
         revision: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Отменить либо досрочно завершить только собственную бронь."""
         return await invoke(
             "cancel_booking",
-            office_id=office_id,
-            booking_id=booking_id,
-            revision=revision,
+            lambda current: facade_callbacks["cancel_booking"](
+                current,
+                office_id=office_id,
+                booking_id=booking_id,
+                revision=revision,
+            ),
         )
 
     public_url = urlsplit(public_base)

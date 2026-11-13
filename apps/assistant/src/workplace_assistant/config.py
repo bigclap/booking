@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal, TypedDict
 
 from pydantic import Field, SecretStr, field_validator
 from workplace_platform.config import ServiceSettings
@@ -22,7 +23,7 @@ class AssistantSettings(ServiceSettings):
 
     @field_validator("openrouter_api_key", "openrouter_model", mode="before")
     @classmethod
-    def empty_is_unset(cls, value):
+    def empty_is_unset(cls, value: object) -> object:
         return None if value == "" else value
 
     @property
@@ -30,7 +31,15 @@ class AssistantSettings(ServiceSettings):
         return bool(self.openrouter_api_key and self.openrouter_model)
 
 
-def configuration_status(settings: AssistantSettings) -> dict:
+class CapabilityStatus(TypedDict):
+    runtime: Literal["pydantic-ai"]
+    model: str | None
+    llm_configured: bool
+    generation_available: bool
+    missing_configuration: list[str]
+
+
+def configuration_status(settings: AssistantSettings) -> CapabilityStatus:
     missing = []
     if not settings.openrouter_api_key:
         missing.append("OPENROUTER_API_KEY")

@@ -14,6 +14,7 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import SecretStr
+from workplace_gateway.contracts.booking import ClientBooking
 from workplace_gateway.mcp_server import (
     REQUIRED_CALLBACKS,
     UsersMCPTokenVerifier,
@@ -264,7 +265,33 @@ async def test_direct_in_memory_tool_call_cannot_bypass_authentication(bundle):
 
 
 async def test_official_sdk_client_uses_the_authenticated_http_transport(bundle):
-    _, configured_http, calls, introspections, _ = bundle
+    _, configured_http, calls, introspections, callbacks = bundle
+
+    async def nonempty_bookings(current, **arguments):
+        calls.append((current, arguments))
+        return [
+            ClientBooking.model_validate(
+                {
+                    "id": "booking-1",
+                    "buildingId": "office-alice",
+                    "floorId": "floor-1",
+                    "resourceId": "desk-1",
+                    "date": "2026-11-13",
+                    "start": 600,
+                    "end": 660,
+                    "ownerId": current.user.id,
+                    "ownerName": "Alice Employee",
+                    "participants": None,
+                    "status": "active",
+                    "revision": 1,
+                    "needsReview": False,
+                    "resourceSnapshot": {"parent_room_id": None},
+                    "cancellationReason": None,
+                }
+            )
+        ]
+
+    callbacks["list_bookings"] = nonempty_bookings
     # Reuse the ASGI application, while the official transport owns protocol framing.
     app = configured_http._transport.app
     async with httpx2.AsyncClient(
@@ -289,6 +316,15 @@ async def test_official_sdk_client_uses_the_authenticated_http_transport(bundle)
             )
             assert not result.is_error
             assert result.structured_content["proposal"]["resourceId"] == "desk-1"
+            bookings = await client.call_tool("list_bookings", {"office_id": "office-alice"})
+            assert not bookings.is_error
+            record = bookings.structured_content["result"][0]
+            assert record["ownerId"] == "alice"
+            assert record["resourceId"] == "desk-1"
+            assert record["needsReview"] is False
+            assert "owner_id" not in record and "resource_id" not in record
+            assert "participants" not in record and "cancellationReason" not in record
+            assert record["resourceSnapshot"] == {"parent_room_id": None}
     assert calls[-1][0].user.id == "alice"
     assert introspections and all(row["token"] == "mcp-alice" for row in introspections)
 
@@ -297,6 +333,8 @@ async def test_official_sdk_client_uses_the_authenticated_http_transport(bundle)
     "patch",
     [
         {"expires_at": 1},
+        {"expires_at": True},
+        {"expires_at": float(int(time.time()) + 600)},
         {"scopes": []},
         {"client_id": ""},
         {"resource": "https://other/mcp"},

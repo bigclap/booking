@@ -1,10 +1,12 @@
 import base64
 import binascii
 import secrets
-from typing import Literal
+from typing import Literal, cast
 
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ValidationError
+
+from workplace_platform.config import ServiceSettings
 
 
 class Actor(BaseModel):
@@ -18,7 +20,8 @@ class Actor(BaseModel):
 
 def require_internal_key(request: Request) -> None:
     supplied = request.headers.get("x-internal-key", "")
-    expected = request.app.state.settings.internal_api_key.get_secret_value()
+    settings = cast(ServiceSettings, request.app.state.settings)
+    expected = settings.internal_api_key.get_secret_value()
     if not secrets.compare_digest(supplied, expected):
         raise HTTPException(401, detail={"code": "internal_auth_required"})
 

@@ -14,8 +14,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from workplace_platform.typing import JsonObject
 
 from workplace_booking.models import Base
+from workplace_booking.types import BookingStatus, ResourceSnapshot
 
 
 class Booking(Base):
@@ -39,10 +41,14 @@ class Booking(Base):
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     scheduled_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     participants: Mapped[int | None] = mapped_column(Integer)
-    status: Mapped[str] = mapped_column(String(16), default="active", server_default="active")
+    status: Mapped[BookingStatus] = mapped_column(
+        String(16), default="active", server_default="active"
+    )
     needs_review: Mapped[bool] = mapped_column(default=False, server_default="false")
     review_reasons: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default="[]")
-    resource_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    resource_snapshot: Mapped[ResourceSnapshot] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
     cancellation_reason: Mapped[str | None] = mapped_column(String(160))
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -70,7 +76,7 @@ class BookingMutation(Base):
     booking_id: Mapped[str] = mapped_column(ForeignKey("bookings.id"), index=True)
     revision: Mapped[int] = mapped_column(Integer)
     operation: Mapped[str] = mapped_column(String(64))
-    snapshot: Mapped[dict] = mapped_column(JSONB)
+    snapshot: Mapped[JsonObject] = mapped_column(JSONB)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

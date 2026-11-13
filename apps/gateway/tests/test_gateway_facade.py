@@ -163,6 +163,20 @@ def test_availability_does_not_merge_mismatched_catalog_revisions(facade_gateway
     assert response.json()["code"] == "office_revision_conflict"
 
 
+def test_malformed_resource_response_is_rejected_without_exposing_rpc_data(facade_gateway):
+    client, _, state, token, _ = facade_gateway
+    state["resources"][0]["capacity"] = {"private_token": "private-rpc-body"}
+    response = client.get(
+        "/api/offices/office-own/availability?start=600",
+        headers={"Authorization": "Bearer " + token()},
+    )
+    assert response.status_code == 502
+    assert response.json()["code"] == "upstream_contract_invalid"
+    assert "private-rpc-body" not in response.text
+    assert "private_token" not in response.text
+    assert "capacity" not in response.text
+
+
 def test_prepare_url_uses_public_origin_and_clears_past_date_only(facade_gateway):
     client, _, _, _, current = facade_gateway
     result = client.portal.call(

@@ -1,8 +1,10 @@
 from datetime import date as Date
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+
+from workplace_booking.types import CapacityWarning, ResourceSnapshot
 
 
 class CreateBookingInput(BaseModel):
@@ -33,7 +35,7 @@ class UpdateBookingInput(BaseModel):
     administrative: StrictBool = False
 
     @model_validator(mode="after")
-    def no_null_required_values(self):
+    def no_null_required_values(self) -> Self:
         for field in self.model_fields_set - {"participants"}:
             if getattr(self, field) is None:
                 raise ValueError(f"{field} cannot be null")
@@ -60,9 +62,9 @@ class BookingView(BaseModel):
     status: Literal["active", "cancelled"]
     needs_review: bool
     review_reasons: list[str] = Field(default_factory=list)
-    resource_snapshot: dict = Field(default_factory=dict)
+    resource_snapshot: ResourceSnapshot = Field(default_factory=ResourceSnapshot)
     cancellation_reason: str | None = None
-    warnings: list[dict] = Field(default_factory=list)
+    warnings: list[CapacityWarning] = Field(default_factory=list)
     revision: int
     starts_at: datetime
     ends_at: datetime

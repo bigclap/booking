@@ -1,4 +1,4 @@
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -65,12 +65,14 @@ FIELD_NAMES = {
 }
 
 
-def install_error_handlers(app):
+def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(HTTPException)
-    async def http_error(request: Request, exc: HTTPException):
-        detail = exc.detail if isinstance(exc.detail, dict) else {}
+    async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
+        detail: dict[str, object] = exc.detail if isinstance(exc.detail, dict) else {}
         code = detail.get("code", "request_failed")
-        extra = {}
+        if not isinstance(code, str):
+            code = "request_failed"
+        extra: dict[str, object] = {}
         if isinstance(detail.get("current_revision"), int):
             extra["currentRevision"] = detail["current_revision"]
         field_map = {
@@ -100,7 +102,7 @@ def install_error_handlers(app):
         )
 
     @app.exception_handler(RequestValidationError)
-    async def invalid_request(request: Request, exc: RequestValidationError):
+    async def invalid_request(request: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(
             {
                 "code": "validation_error",

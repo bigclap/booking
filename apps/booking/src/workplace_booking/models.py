@@ -1,11 +1,13 @@
 from datetime import datetime, time
-from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Time, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from workplace_platform.outbox import OutboxMixin
+from workplace_platform.typing import JsonObject
+
+from workplace_booking.types import HoursDocument, ResourceKind
 
 
 class Base(DeclarativeBase):
@@ -24,7 +26,7 @@ class Building(Base):
     address: Mapped[str | None] = mapped_column(String(320))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    hours_document: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    hours_document: Mapped[HoursDocument | None] = mapped_column(JSONB)
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -60,7 +62,7 @@ class Floor(Base):
     name: Mapped[str] = mapped_column(String(1000))
     position: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # Exact frontend Floor document, including geometry, background and extension fields.
-    plan_document: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    plan_document: Mapped[JsonObject | None] = mapped_column(JSONB)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -74,7 +76,7 @@ class Resource(Base):
     id: Mapped[str] = mapped_column(String(1000), primary_key=True, default=lambda: str(uuid4()))
     floor_id: Mapped[str] = mapped_column(ForeignKey("floors.id"), index=True)
     parent_room_id: Mapped[str | None] = mapped_column(ForeignKey("resources.id"), index=True)
-    kind: Mapped[str] = mapped_column(String(24))
+    kind: Mapped[ResourceKind] = mapped_column(String(24))
     name: Mapped[str] = mapped_column(String(1000))
     shared_booking: Mapped[bool] = mapped_column(default=False, server_default="false")
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

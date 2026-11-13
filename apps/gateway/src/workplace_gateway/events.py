@@ -8,16 +8,20 @@ import asyncio
 import json
 import re
 from collections import deque
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 
 import anyio
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from nats.aio.client import Client as NATSClient
+from nats.aio.msg import Msg
+from nats.aio.subscription import Subscription
 from starlette.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 from workplace_platform.jwt_tokens import AccessContext
+
+from workplace_gateway.config import GatewaySettings
 
 QUEUE_LIMIT = 128
 SEEN_LIMIT = 256
@@ -35,7 +39,7 @@ def utc_now() -> datetime:
 @dataclass(frozen=True)
 class PublicEvent:
     name: str
-    data: dict[str, Any]
+    data: dict[str, str | int | bool | None]
     event_id: str | None = None
     terminal: bool = False
 
@@ -46,11 +50,11 @@ class PublicEvent:
         return ("\n".join(lines) + "\n\n").encode()
 
 
-def _identifier(value: Any) -> str | None:
+def _identifier(value: object) -> str | None:
     return value if isinstance(value, str) and value.strip() and len(value) <= 1000 else None
 
 
-def _revision(data: dict) -> str | int | None:
+def _revision(data: Mapping[str, object]) -> str | int | None:
     for field in ("revision", "version", "updated_at"):
         value = data.get(field)
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
@@ -69,17 +73,21 @@ def public_event(subject: str, raw: bytes, current: AccessContext) -> PublicEven
     }:
         return None
     try:
-        envelope = json.loads(raw)
+        parsed: object = json.loads(raw)
     except (UnicodeDecodeError, ValueError, TypeError, RecursionError):
         return None
-    if not isinstance(envelope, dict) or envelope.get("subject") != subject:
+    if not isinstance(parsed, dict):
+        return None
+    envelope: dict[str, object] = parsed
+    if envelope.get("subject") != subject:
         return None
     event_id = envelope.get("id")
-    data = envelope.get("data")
+    payload = envelope.get("data")
     if not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id):
         return None
-    if not isinstance(data, dict):
+    if not isinstance(payload, dict):
         return None
+    data: dict[str, object] = payload
 
     revision = _revision(data)
     if subject == "workplace.assistant.dialog.changed":
@@ -94,12 +102,13 @@ def public_event(subject: str, raw: bytes, current: AccessContext) -> PublicEven
         )
         if session_id is None and not archive_only:
             return None
-        result: dict[str, Any] = {"sessionId": session_id}
+        result: dict[str, str | int | bool | None] = {"sessionId": session_id}
         if "archived_session_id" in data:
-            archived = data["archived_session_id"]
-            if archived is not None and _identifier(archived) is None:
+            raw_archived = data["archived_session_id"]
+            archived_id = _identifier(raw_archived)
+            if raw_archived is not None and archived_id is None:
                 return None
-            result["archivedSessionId"] = archived
+            result["archivedSessionId"] = archived_id
         if revision is not None:
             result["revision"] = revision
         return PublicEvent("chat.changed", result, event_id)
@@ -142,12 +151,14 @@ def public_event(subject: str, raw: bytes, current: AccessContext) -> PublicEven
 
 
 class EventBridge:
-    def __init__(self, current: AccessContext, client, *, queue_limit: int = QUEUE_LIMIT):
+    def __init__(
+        self, current: AccessContext, client: NATSClient, *, queue_limit: int = QUEUE_LIMIT
+    ) -> None:
         if queue_limit < 1:
             raise ValueError("The event queue must be bounded")
         self.current = current
         self.client = client
-        self.subscription = None
+        self.subscription: Subscription | None = None
         self.queue: asyncio.Queue[PublicEvent] = asyncio.Queue(maxsize=queue_limit)
         self.closed = False
         self.failed = False
@@ -169,7 +180,7 @@ class EventBridge:
     async def on_error(self, error: Exception) -> None:
         self.require_snapshot()
 
-    async def receive(self, message) -> None:
+    async def receive(self, message: Msg) -> None:
         if self.closed or self.failed:
             return
         event = public_event(message.subject, message.data, self.current)
@@ -201,7 +212,7 @@ class EventBridge:
             except Exception:
                 pass
 
-    async def stream(self, request: Request):
+    async def stream(self, request: Request) -> AsyncIterator[bytes]:
         try:
             if await request.is_disconnected():
                 return
@@ -243,7 +254,7 @@ class EventBridge:
 class EventStreamResponse(StreamingResponse):
     """Also release a prepared subscription if HTTP sending fails before iteration starts."""
 
-    def __init__(self, bridge: EventBridge, request: Request):
+    def __init__(self, bridge: EventBridge, request: Request) -> None:
         self.bridge = bridge
         super().__init__(
             bridge.stream(request),
@@ -255,7 +266,7 @@ class EventStreamResponse(StreamingResponse):
             },
         )
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
             await super().__call__(scope, receive, send)
         finally:
@@ -263,9 +274,13 @@ class EventStreamResponse(StreamingResponse):
                 await self.bridge.close()
 
 
-def install_events(app, settings, authenticate: Callable[[Request], AccessContext]) -> None:
+def install_events(
+    app: FastAPI,
+    settings: GatewaySettings,
+    authenticate: Callable[[Request], AccessContext],
+) -> None:
     @app.get("/api/events", tags=["events"], response_class=StreamingResponse)
-    async def events(request: Request):
+    async def events(request: Request) -> EventStreamResponse:
         current = authenticate(request)
         client = NATSClient()
         bridge = EventBridge(current, client)

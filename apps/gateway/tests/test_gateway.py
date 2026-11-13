@@ -290,3 +290,29 @@ def test_public_docs_live_under_same_api_prefix(gateway):
     schema = client.get("/api/openapi.json").json()
     assert "firstName" in schema["components"]["schemas"]["AppUser"]["properties"]
     assert "OfficeDocument" in schema["components"]["schemas"]
+
+
+def test_invalid_office_response_is_reported_as_an_upstream_contract_error(gateway):
+    client, _, state, token = gateway
+    state["offices"][0]["revision"] = "invalid-private-value"
+    response = client.get("/api/offices", headers={"Authorization": f"Bearer {token()}"})
+    assert response.status_code == 502
+    assert response.json()["code"] == "upstream_contract_invalid"
+    assert "invalid-private-value" not in response.text
+
+
+def test_invalid_session_response_does_not_set_authentication_cookies(gateway):
+    client, _, _, _ = gateway
+    client.app.state.http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"access_token": 123, "token": "private-refresh-token"},
+            )
+        )
+    )
+    response = client.post("/api/auth/login", json={"login": "ivan", "password": "secret"})
+    assert response.status_code == 502
+    assert response.json()["code"] == "upstream_contract_invalid"
+    assert "private-refresh-token" not in response.text
+    assert "set-cookie" not in response.headers

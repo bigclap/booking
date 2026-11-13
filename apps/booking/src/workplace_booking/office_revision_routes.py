@@ -4,7 +4,7 @@ import hashlib
 import json
 from copy import deepcopy
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import ValidationError
@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from workplace_platform.auth import require_internal_key
+from workplace_platform.typing import JsonObject, SessionDependency
 
 from workplace_booking.models import Building, OfficeImportReceipt
 from workplace_booking.offices import (
@@ -34,24 +35,31 @@ def import_conflict() -> HTTPException:
     return HTTPException(409, detail={"code": "office_import_conflict"})
 
 
-def import_parts(body: OfficeImportInput):
+def import_parts(
+    body: OfficeImportInput,
+) -> tuple[str, list[JsonObject], set[str], OfficeSettingsInput, str]:
     """Gateway validates geometry; Booking also protects local identity/schedule invariants."""
     document = deepcopy(body.document)
     if type(document.get("version")) is not int or document["version"] != 1:
         raise invalid_document()
     office_id = _identifier(document.get("id"))
-    floors = document.get("floors")
-    if not isinstance(floors, list) or not 1 <= len(floors) <= 40:
+    raw_floors = document.get("floors")
+    if not isinstance(raw_floors, list) or not 1 <= len(raw_floors) <= 40:
         raise invalid_document()
-    if any(not isinstance(floor, dict) for floor in floors):
-        raise invalid_document()
+    floors: list[JsonObject] = []
+    for floor in raw_floors:
+        if not isinstance(floor, dict):
+            raise invalid_document()
+        floors.append(floor)
     identifiers = validate_plan(office_id, floors)
     try:
-        settings = OfficeSettingsInput(
-            name=document.get("name"),
-            address=document.get("address"),
-            hours_document=document.get("hours"),
-            expected_revision=1,
+        settings = OfficeSettingsInput.model_validate(
+            {
+                "name": document.get("name"),
+                "address": document.get("address"),
+                "hours_document": document.get("hours"),
+                "expected_revision": 1,
+            }
         )
         updated_at = document.get("updatedAt")
         if not isinstance(updated_at, str):
@@ -72,7 +80,7 @@ def import_parts(body: OfficeImportInput):
 def same_document(
     existing: OfficeDocument,
     settings: OfficeSettingsInput,
-    floors: list[dict[str, Any]],
+    floors: list[JsonObject],
 ) -> bool:
     return (
         existing.name == settings.name
@@ -123,7 +131,10 @@ async def import_office(
             await replace_hours(
                 session,
                 existing,
-                {day: entry.model_dump() for day, entry in settings.hours_document.items()},
+                {
+                    day: {"enabled": entry.enabled, "start": entry.start, "end": entry.end}
+                    for day, entry in settings.hours_document.items()
+                },
             )
             await replace_plan_documents(session, office_id, floors, identifiers)
             await record_change(session, existing, "imported", advance_revision=False)
@@ -140,17 +151,16 @@ async def import_office(
     return result
 
 
-def create_router(get_session) -> APIRouter:
+def create_router(get_session: SessionDependency) -> APIRouter:
     router = APIRouter(prefix="/internal", dependencies=[Depends(require_internal_key)])
-    Database = Annotated[AsyncSession, Depends(get_session)]
 
     @router.post("/offices/import", response_model=OfficeDocument, tags=["offices"])
     async def import_document(
         body: OfficeImportInput,
-        session: Database,
+        session: Annotated[AsyncSession, Depends(get_session)],
         actor_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=160)],
         key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=128)],
-    ):
+    ) -> OfficeDocument:
         try:
             return await import_office(session, body, actor_id, key)
         except IntegrityError as exc:

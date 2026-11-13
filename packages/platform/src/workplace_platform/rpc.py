@@ -11,18 +11,24 @@ import base64
 import json
 import logging
 import secrets
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import unquote, urlsplit
 
 import httpx
 import nats
 from nats.aio.client import Client
+from nats.aio.msg import Msg
+from nats.aio.subscription import Subscription
 from nats.errors import MaxPayloadError, NoRespondersError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
+from starlette.types import ASGIApp
 
+from workplace_platform.config import ServiceSettings
 from workplace_platform.correlation import event_metadata
 from workplace_platform.http_clients import stateless_cookies
+from workplace_platform.typing import JsonValue
 
 logger = logging.getLogger(__name__)
 SERVICES = {"users", "booking", "assistant"}
@@ -44,6 +50,7 @@ HEADER_NAMES = {
     "access-control-request-headers",
 }
 HOP_HEADERS = {"content-length", "transfer-encoding", "connection", "keep-alive"}
+JSON_VALUE = TypeAdapter(JsonValue)
 
 
 class RpcRequest(BaseModel):
@@ -57,12 +64,12 @@ class RpcRequest(BaseModel):
     )
     headers: dict[str, str] = Field(default_factory=dict)
     query: list[tuple[str, str]] = Field(default_factory=list)
-    payload: Any = None
+    payload: JsonValue = None
     body: str | None = None
 
     @field_validator("path")
     @classmethod
-    def internal_path(cls, path):
+    def internal_path(cls, path: str) -> str:
         if any(part in {".", ".."} for part in unquote(path).split("/")) or "\\" in path:
             raise ValueError("RPC path traversal is not permitted")
         return path
@@ -74,7 +81,7 @@ class RpcResponse(BaseModel):
     version: Literal[1] = 1
     status: int = Field(ge=100, le=599)
     headers: dict[str, str] = Field(default_factory=dict)
-    payload: Any = None
+    payload: JsonValue = None
     body: str | None = None
     cookies: list[str] = Field(default_factory=list)
 
@@ -86,7 +93,7 @@ def subject(service: str) -> str:
 
 
 @asynccontextmanager
-async def service_client(settings):
+async def service_client(settings: ServiceSettings) -> AsyncIterator[httpx.AsyncClient]:
     """Worker-side client with the same private RPC transport as the API lifespan."""
     connection = None
     try:
@@ -106,7 +113,7 @@ async def service_client(settings):
 class ServiceTransport(httpx.AsyncBaseTransport):
     """Route private service origins over NATS; never retry ambiguous mutations."""
 
-    def __init__(self, connection: Client, settings):
+    def __init__(self, connection: Client, settings: ServiceSettings) -> None:
         self.connection = connection
         self.timeout = settings.request_timeout_seconds
         self.key = settings.internal_api_key.get_secret_value()
@@ -128,13 +135,15 @@ class ServiceTransport(httpx.AsyncBaseTransport):
             headers.setdefault("x-internal-key", self.key)
             for key, value in event_metadata().items():
                 headers.setdefault(f"x-{key.replace('_', '-')}", value)
-            command = RpcRequest(
-                method=request.method,
-                path=request.url.path,
-                headers=headers,
-                query=request.url.params.multi_items(),
-                payload=json.loads(body) if body and is_json else None,
-                body=base64.b64encode(body).decode() if body and not is_json else None,
+            command = RpcRequest.model_validate(
+                {
+                    "method": request.method,
+                    "path": request.url.path,
+                    "headers": headers,
+                    "query": request.url.params.multi_items(),
+                    "payload": JSON_VALUE.validate_json(body) if body and is_json else None,
+                    "body": base64.b64encode(body).decode() if body and not is_json else None,
+                }
             )
             message = await self.connection.request(
                 subject(service), command.model_dump_json().encode(), timeout=self.timeout
@@ -166,39 +175,39 @@ class ServiceTransport(httpx.AsyncBaseTransport):
             request=request,
         )
 
-    async def aclose(self):
+    async def aclose(self) -> None:
         await self.external.aclose()
 
 
 class RpcServer:
-    def __init__(self, connection: Client, app, service: str, key: str):
+    def __init__(self, connection: Client, app: ASGIApp, service: str, key: str) -> None:
         self.connection = connection
         self.app = app
         self.service = service
         self.key = key
-        self.pending: set[asyncio.Task] = set()
+        self.pending: set[asyncio.Task[None]] = set()
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://internal",
             cookies=stateless_cookies(),
         )
         self.slots = asyncio.Semaphore(64)
-        self.subscription = None
+        self.subscription: Subscription | None = None
 
-    async def start(self):
+    async def start(self) -> None:
         self.subscription = await self.connection.subscribe(
             subject(self.service), queue=f"{self.service}-rpc-v1", cb=self.receive
         )
         await self.connection.flush()
 
-    async def receive(self, message):
+    async def receive(self, message: Msg) -> None:
         # nats-py awaits a subscription callback serially. Dispatch concurrently so
         # independent requests retain real DB concurrency and do not block health.
         task = asyncio.create_task(self.handle(message))
         self.pending.add(task)
         task.add_done_callback(self.pending.discard)
 
-    async def handle(self, message):
+    async def handle(self, message: Msg) -> None:
         async with self.slots:
             try:
                 command = RpcRequest.model_validate_json(message.data)
@@ -212,12 +221,11 @@ class RpcServer:
                         command.method,
                         command.path,
                         headers={k: v for k, v in command.headers.items() if k in HEADER_NAMES},
-                        params=command.query,
-                        **(
-                            {"content": base64.b64decode(command.body, validate=True)}
-                            if command.body is not None
-                            else {"json": command.payload}
-                        ),
+                        params=tuple(command.query),
+                        content=base64.b64decode(command.body, validate=True)
+                        if command.body is not None
+                        else None,
+                        json=command.payload if command.body is None else None,
                     )
                     is_json = "application/json" in response.headers.get("content-type", "")
                     result = RpcResponse(
@@ -227,7 +235,9 @@ class RpcServer:
                             for k, v in response.headers.items()
                             if k not in HOP_HEADERS and k != "set-cookie"
                         },
-                        payload=response.json() if response.content and is_json else None,
+                        payload=JSON_VALUE.validate_json(response.content)
+                        if response.content and is_json
+                        else None,
                         body=(
                             base64.b64encode(response.content).decode()
                             if response.content and not is_json
@@ -256,7 +266,7 @@ class RpcServer:
                 with suppress(Exception):
                     await message.respond(encoded)
 
-    async def close(self):
+    async def close(self) -> None:
         if self.subscription is not None:
             await self.subscription.unsubscribe()
         if self.pending:

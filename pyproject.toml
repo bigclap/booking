@@ -14,7 +14,25 @@ members = ["packages/*", "apps/users", "apps/booking", "apps/assistant", "apps/g
 workplace-platform = { workspace = true }
 
 [dependency-groups]
-dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]
+dev = ["mypy==2.4.1", "pytest>=8.3,<9", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+strict = true
+files = [
+    "packages/platform/src",
+    "apps/users/src",
+    "apps/booking/src",
+    "apps/assistant/src",
+    "apps/gateway/src",
+]
+cache_dir = "/tmp/mypy-cache"
+show_error_codes = true
+pretty = true
+
+[tool.pydantic-mypy]
+init_typed = true
 
 [tool.pytest.ini_options]
 testpaths = [

@@ -1,8 +1,11 @@
 """Forward the public standard OAuth protocol, without forwarding trusted actor headers."""
 
 import httpx
-from fastapi import HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.types import Receive, Scope, Send
+
+from workplace_gateway.config import GatewaySettings
 
 OAUTH_PATHS = frozenset(
     {
@@ -17,7 +20,7 @@ OAUTH_PATHS = frozenset(
 
 
 class ProtocolCORSMiddleware(CORSMiddleware):
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("path", "").startswith(("/oauth/", "/.well-known/")):
             # OAuth metadata/registration/token CORS belongs to the official SDK.
             # The web cookie API retains its explicit origin policy.
@@ -26,8 +29,8 @@ class ProtocolCORSMiddleware(CORSMiddleware):
         await super().__call__(scope, receive, send)
 
 
-def install_oauth_proxy(app, settings):
-    async def proxy(request: Request, path: str):
+def install_oauth_proxy(app: FastAPI, settings: GatewaySettings) -> None:
+    async def proxy(request: Request, path: str) -> Response:
         headers = {
             key: value
             for key, value in request.headers.items()
@@ -44,11 +47,12 @@ def install_oauth_proxy(app, settings):
             }
         }
         try:
-            result = await app.state.oauth_http_client.request(
+            client: httpx.AsyncClient = app.state.oauth_http_client
+            result = await client.request(
                 request.method,
                 settings.users_url + path,
                 headers=headers,
-                params=request.query_params.multi_items(),
+                params=str(request.query_params),
                 content=await request.body(),
             )
         except httpx.HTTPError as exc:
@@ -83,7 +87,7 @@ def install_oauth_proxy(app, settings):
     @app.api_route(
         "/oauth/{path:path}", methods=["GET", "POST", "OPTIONS"], include_in_schema=False
     )
-    async def oauth(request: Request, path: str):
+    async def oauth(request: Request, path: str) -> Response:
         # HTTPX normalizes dot segments before the private transport sees them.
         # Never let a public path choose another trusted service handler.
         if path not in OAUTH_PATHS:
@@ -92,5 +96,5 @@ def install_oauth_proxy(app, settings):
 
     @app.get("/.well-known/oauth-authorization-server/oauth", include_in_schema=False)
     @app.get("/.well-known/oauth-authorization-server", include_in_schema=False)
-    async def metadata(request: Request):
+    async def metadata(request: Request) -> Response:
         return await proxy(request, "/oauth/.well-known/oauth-authorization-server")
