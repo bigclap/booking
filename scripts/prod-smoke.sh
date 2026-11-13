@@ -176,7 +176,7 @@ docker exec "$PROOF_CLIENT" cat /tmp/bff-office.json | \
   docker run --rm --interactive --network none --read-only --tmpfs /tmp \
     --mount "type=bind,src=$PWD/apps/frontend/src,dst=/workspace/apps/frontend/src,readonly" \
     workplace-booking-frontend-parser-proof node --input-type=module -e '
-import { parseConfig } from "/workspace/apps/frontend/src/model.ts";
+import { parseConfig } from "/workspace/apps/frontend/src/office/lib/officeModel.ts";
 let raw = "";
 for await (const chunk of process.stdin) raw += chunk;
 const office = parseConfig(raw);
