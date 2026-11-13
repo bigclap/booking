@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="140" height="80" viewBox="0 0 140 80" fill="none"><title>Рабочий стол</title><defs>
+      <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="2" stdDeviation="1.5" flood-color="#223b49" flood-opacity=".16"/></filter>
+      <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f4dfbe"/><stop offset="1" stop-color="#dfb887"/></linearGradient>
+      <linearGradient id="fabric" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#a0b5c5"/><stop offset="1" stop-color="#7894a9"/></linearGradient>
+      <linearGradient id="back" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#6c8a9d"/><stop offset="1" stop-color="#496a80"/></linearGradient>
+      <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fbfcfb"/><stop offset="1" stop-color="#dce3e7"/></linearGradient>
+    </defs><g filter="url(#shadow)"><rect x="5" y="6" width="130" height="66" rx="8" fill="url(#wood)" stroke="#b38c64" stroke-width="1.4"/><rect x="9" y="10" width="122" height="58" rx="5" stroke="#fff9ec" stroke-opacity=".58"/><path d="M17 24C49 22 87 26 121 23M16 43C52 41 85 45 123 42M19 58C53 56 83 60 119 58" stroke="#bf9466" stroke-opacity=".24" stroke-width="1.1"/><circle cx="119" cy="19" r="3.1" fill="#b68b61"/><circle cx="119" cy="19" r="1.8" fill="#805f43"/></g></svg>

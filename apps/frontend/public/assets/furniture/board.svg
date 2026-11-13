@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="110" height="24" viewBox="0 0 110 24" fill="none"><title>Доска</title><defs>
+      <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="2" stdDeviation="1.5" flood-color="#223b49" flood-opacity=".16"/></filter>
+      <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f4dfbe"/><stop offset="1" stop-color="#dfb887"/></linearGradient>
+      <linearGradient id="fabric" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#a0b5c5"/><stop offset="1" stop-color="#7894a9"/></linearGradient>
+      <linearGradient id="back" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#6c8a9d"/><stop offset="1" stop-color="#496a80"/></linearGradient>
+      <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fbfcfb"/><stop offset="1" stop-color="#dce3e7"/></linearGradient>
+    </defs><g filter="url(#shadow)"><path d="M18 6v14m74-14v14" stroke="#7e939f" stroke-width="3" stroke-linecap="round"/><rect x="4" y="4" width="102" height="10" rx="3" fill="#a1b0b8" stroke="#6f8794" stroke-width="1.2"/><rect x="7" y="6" width="96" height="5" rx="1.5" fill="#f9fcfb"/><rect x="35" y="13" width="40" height="4" rx="1.5" fill="#718c9a"/><path d="M42 14h9m8 0h9" stroke="#c6d7df" stroke-width="1.5" stroke-linecap="round"/></g></svg>

@@ -1,0 +1,21 @@
+[project]
+name = "workplace-users"
+version = "0.1.0"
+description = "Employee accounts and revocable sessions"
+requires-python = ">=3.12"
+dependencies = [
+  "workplace-platform",
+  "argon2-cffi>=23.1,<26",
+  "mcp>=2.3,<3",
+  "cryptography>=44,<51",
+]
+
+[tool.uv.sources]
+workplace-platform = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workplace_users"]

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="70" height="28" viewBox="0 0 70 28" fill="none"><title>Монитор</title><defs>
+      <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="2" stdDeviation="1.5" flood-color="#223b49" flood-opacity=".16"/></filter>
+      <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f4dfbe"/><stop offset="1" stop-color="#dfb887"/></linearGradient>
+      <linearGradient id="fabric" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#a0b5c5"/><stop offset="1" stop-color="#7894a9"/></linearGradient>
+      <linearGradient id="back" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#6c8a9d"/><stop offset="1" stop-color="#496a80"/></linearGradient>
+      <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fbfcfb"/><stop offset="1" stop-color="#dce3e7"/></linearGradient>
+    </defs><g filter="url(#shadow)"><rect x="22" y="19" width="26" height="5" rx="2.5" fill="#637887" stroke="#435b6b"/><rect x="31" y="8" width="8" height="13" rx="2" fill="#8395a1" stroke="#526b7c"/><path d="M4 4Q35 1 66 4v7Q35 8 4 11Z" fill="#334d60" stroke="#213e52" stroke-width="1.2"/><path d="M8 5.5Q35 3.7 62 5.5" stroke="#a0c1d1" stroke-width="1.3"/><circle cx="61" cy="8" r=".8" fill="#b6d3c3"/></g></svg>

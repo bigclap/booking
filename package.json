@@ -1,0 +1,17 @@
+{
+  "name": "workplace-booking",
+  "private": true,
+  "workspaces": [
+    "apps/frontend"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@workplace/frontend",
+    "build": "npm run build --workspace=@workplace/frontend",
+    "test": "npm run test --workspace=@workplace/frontend",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "3.10.1"
+  }
+}

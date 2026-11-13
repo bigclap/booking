@@ -1,0 +1,374 @@
+name: workplace-booking-dev
+
+x-common-env: &common-env
+  INTERNAL_API_KEY: ${INTERNAL_API_KEY:-local-development-internal-key-change-before-deploy}
+  NATS_URL: nats://nats:4222
+  INTERNAL_RPC_ENABLED: 'true'
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:5178}
+  USERS_URL: http://users:8000
+  PYTHONDONTWRITEBYTECODE: '1'
+
+x-users-env: &users-env
+  <<: *common-env
+  MCP_ENCRYPTION_KEY: ${MCP_ENCRYPTION_KEY:-local-mcp-client-encryption-key-change-before-deploy}
+  MCP_ACCESS_TTL_SECONDS: ${MCP_ACCESS_TTL_SECONDS:-600}
+  MCP_REFRESH_DAYS: ${MCP_REFRESH_DAYS:-30}
+  WEB_JWT_SECRET: ${WEB_JWT_SECRET:-local-web-signing-key-change-before-deploy-32chars}
+  DATABASE_URL: postgresql+asyncpg://workplace_users@postgres:5432/users
+  DATABASE_PASSWORD: ${USERS_DB_PASSWORD:-users-local-only}
+
+x-booking-env: &booking-env
+  <<: *common-env
+  DATABASE_URL: postgresql+asyncpg://workplace_booking@postgres:5432/booking
+  DATABASE_PASSWORD: ${BOOKING_DB_PASSWORD:-booking-local-only}
+  BOOKING_STEP_MINUTES: ${BOOKING_STEP_MINUTES:-5}
+  BOOKING_HORIZON_DAYS: ${BOOKING_HORIZON_DAYS:-7}
+
+x-assistant-env: &assistant-env
+  <<: *common-env
+  DATABASE_URL: postgresql+asyncpg://workplace_assistant@postgres:5432/assistant
+  DATABASE_PASSWORD: ${ASSISTANT_DB_PASSWORD:-assistant-local-only}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+  MCP_URL: http://gateway:8000/mcp
+
+x-python: &python
+  image: workplace-booking-dev
+  build:
+    context: .
+    dockerfile: infra/backend.dev.Dockerfile
+    target: dev
+  init: true
+  volumes:
+    - ./apps:/workspace/apps:ro
+    - ./packages:/workspace/packages:ro
+    - ./scripts:/workspace/scripts:ro
+  networks: [backend]
+
+x-api: &api
+  <<: *python
+  restart: unless-stopped
+  healthcheck:
+    test:
+      [
+        CMD,
+        python,
+        -c,
+        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=10)",
+      ]
+    interval: 10s
+    timeout: 12s
+    retries: 6
+    start_period: 15s
+
+services:
+  formatter:
+    profiles: [tools]
+    image: workplace-booking-frontend-dev
+    build:
+      context: .
+      dockerfile: infra/frontend.Dockerfile
+      target: dev
+    working_dir: /source
+    entrypoint: [/workspace/node_modules/.bin/prettier]
+    command: [--check, .]
+    volumes:
+      - .:/source
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+
+  nginx:
+    image: nginx:1.28-alpine
+    init: true
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:${FRONTEND_PORT:-5178}:8080'
+    volumes:
+      - ./infra/nginx/dev.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [backend]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/health']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      frontend: { condition: service_healthy }
+      gateway: { condition: service_healthy }
+
+  frontend:
+    image: workplace-booking-frontend-dev
+    build:
+      context: .
+      dockerfile: infra/frontend.Dockerfile
+      target: dev
+    init: true
+    command: [npm, run, dev]
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:5178/').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - ./apps/frontend/src:/workspace/apps/frontend/src:ro
+      - ./apps/frontend/public:/workspace/apps/frontend/public:ro
+      - ./apps/frontend/index.html:/workspace/apps/frontend/index.html:ro
+      - ./apps/frontend/vite.config.ts:/workspace/apps/frontend/vite.config.ts:ro
+    networks: [backend]
+
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres-local-only}
+      USERS_DB_PASSWORD: ${USERS_DB_PASSWORD:-users-local-only}
+      BOOKING_DB_PASSWORD: ${BOOKING_DB_PASSWORD:-booking-local-only}
+      ASSISTANT_DB_PASSWORD: ${ASSISTANT_DB_PASSWORD:-assistant-local-only}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init-databases.sh:/docker-entrypoint-initdb.d/10-databases.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d postgres']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.11-alpine
+    command: ['-c', /etc/nats/nats.conf]
+    volumes:
+      - nats-data:/data
+      - ./infra/nats/nats.conf:/etc/nats/nats.conf:ro
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8222/healthz?js-enabled-only=true']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [backend]
+    restart: unless-stopped
+
+  users-migrate:
+    <<: *python
+    environment: *users-env
+    command: [alembic, -c, apps/users/alembic.ini, upgrade, head]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  booking-migrate:
+    <<: *python
+    environment: *booking-env
+    command: [alembic, -c, apps/booking/alembic.ini, upgrade, head]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  assistant-migrate:
+    <<: *python
+    environment: *assistant-env
+    command: [alembic, -c, apps/assistant/alembic.ini, upgrade, head]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  users:
+    <<: *api
+    environment: *users-env
+    command:
+      [
+        uvicorn,
+        workplace_users.main:app,
+        --host,
+        0.0.0.0,
+        --port,
+        '8000',
+        --reload,
+        --reload-dir,
+        apps/users/src,
+        --reload-dir,
+        packages/platform/src,
+        --no-access-log,
+      ]
+    depends_on:
+      users-migrate: { condition: service_completed_successfully }
+      nats: { condition: service_healthy }
+
+  booking:
+    <<: *api
+    environment: *booking-env
+    command:
+      [
+        uvicorn,
+        workplace_booking.main:app,
+        --host,
+        0.0.0.0,
+        --port,
+        '8000',
+        --reload,
+        --reload-dir,
+        apps/booking/src,
+        --reload-dir,
+        packages/platform/src,
+        --no-access-log,
+      ]
+    depends_on:
+      booking-migrate: { condition: service_completed_successfully }
+      nats: { condition: service_healthy }
+
+  assistant:
+    <<: *api
+    environment: *assistant-env
+    command:
+      [
+        uvicorn,
+        workplace_assistant.main:app,
+        --host,
+        0.0.0.0,
+        --port,
+        '8000',
+        --reload,
+        --reload-dir,
+        apps/assistant/src,
+        --reload-dir,
+        packages/platform/src,
+        --no-access-log,
+      ]
+    depends_on:
+      assistant-migrate: { condition: service_completed_successfully }
+      nats: { condition: service_healthy }
+
+  gateway:
+    <<: *api
+    environment:
+      <<: *common-env
+      BOOKING_URL: http://booking:8000
+      WEB_JWT_SECRET: ${WEB_JWT_SECRET:-local-web-signing-key-change-before-deploy-32chars}
+      ASSISTANT_URL: http://assistant:8000
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-["http://localhost:5178","http://127.0.0.1:5178"]}
+    command:
+      [
+        uvicorn,
+        workplace_gateway.main:app,
+        --host,
+        0.0.0.0,
+        --port,
+        '8000',
+        --reload,
+        --reload-dir,
+        apps/gateway/src,
+        --reload-dir,
+        packages/platform/src,
+        --no-access-log,
+        --timeout-graceful-shutdown,
+        '5',
+      ]
+    depends_on:
+      users: { condition: service_healthy }
+      booking: { condition: service_healthy }
+      # Assistant intentionally absent: an AI outage must not gate the form API.
+
+  users-outbox:
+    <<: *python
+    environment: *users-env
+    command: [python, -m, workplace_platform.outbox]
+    restart: unless-stopped
+    depends_on:
+      users-migrate: { condition: service_completed_successfully }
+      nats: { condition: service_healthy }
+
+  users-booking-events:
+    <<: *python
+    environment: *users-env
+    command: [python, -m, workplace_users.booking_events]
+    restart: unless-stopped
+    depends_on:
+      users-migrate: { condition: service_completed_successfully }
+      nats: { condition: service_healthy }
+
+  booking-outbox:
+    <<: *python
+    environment: *booking-env
+    command: [python, -m, workplace_platform.outbox]
+    restart: unless-stopped
+    depends_on:
+      booking-migrate: { condition: service_completed_successfully }
+      nats: { condition: service_healthy }
+
+  booking-user-events:
+    <<: *python
+    environment: *booking-env
+    command: [python, -m, workplace_booking.user_events]
+    restart: unless-stopped
+    depends_on:
+      booking-migrate: { condition: service_completed_successfully }
+      nats: { condition: service_healthy }
+
+  assistant-booking-events:
+    <<: *python
+    environment: *assistant-env
+    command: [python, -m, workplace_assistant.booking_events]
+    restart: unless-stopped
+    depends_on:
+      assistant-migrate: { condition: service_completed_successfully }
+      nats: { condition: service_healthy }
+
+  assistant-generations:
+    <<: *python
+    environment: *assistant-env
+    command: [python, -m, workplace_assistant.generation_worker]
+    restart: unless-stopped
+    depends_on:
+      assistant-migrate: { condition: service_completed_successfully }
+      users: { condition: service_healthy }
+      nats: { condition: service_healthy }
+
+  assistant-outbox:
+    <<: *python
+    environment: *assistant-env
+    command: [python, -m, workplace_platform.outbox]
+    restart: unless-stopped
+    depends_on:
+      assistant-migrate: { condition: service_completed_successfully }
+      nats: { condition: service_healthy }
+
+  bootstrap:
+    <<: *python
+    profiles: [tools]
+    environment:
+      <<: *users-env
+      BOOTSTRAP_ADMIN_LOGIN: ${BOOTSTRAP_ADMIN_LOGIN:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      BOOTSTRAP_ADMIN_FIRST_NAME: ${BOOTSTRAP_ADMIN_FIRST_NAME:-Администратор}
+      BOOTSTRAP_ADMIN_LAST_NAME: ${BOOTSTRAP_ADMIN_LAST_NAME:-Офиса}
+    command: [python, -m, workplace_users.bootstrap]
+    depends_on:
+      users-migrate: { condition: service_completed_successfully }
+
+  dev:
+    <<: *python
+    profiles: [tools]
+    environment:
+      <<: *common-env
+      WEB_JWT_SECRET: ${WEB_JWT_SECRET:-local-web-signing-key-change-before-deploy-32chars}
+    command: [sleep, infinity]
+    volumes:
+      - .:/workspace
+      - uv-cache:/var/cache/uv
+    depends_on:
+      postgres: { condition: service_healthy }
+      nats: { condition: service_healthy }
+
+networks:
+  backend:
+
+volumes:
+  postgres-data:
+  nats-data:
+  uv-cache:

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="140" height="80" viewBox="0 0 140 80" fill="none"><title>Стол с регулировкой высоты</title><defs>
+      <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="2" stdDeviation="1.5" flood-color="#223b49" flood-opacity=".16"/></filter>
+      <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f4dfbe"/><stop offset="1" stop-color="#dfb887"/></linearGradient>
+      <linearGradient id="fabric" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#a0b5c5"/><stop offset="1" stop-color="#7894a9"/></linearGradient>
+      <linearGradient id="back" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#6c8a9d"/><stop offset="1" stop-color="#496a80"/></linearGradient>
+      <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fbfcfb"/><stop offset="1" stop-color="#dce3e7"/></linearGradient>
+    </defs><g filter="url(#shadow)"><rect x="17" y="3" width="16" height="74" rx="3" fill="#637b8a"/><rect x="107" y="3" width="16" height="74" rx="3" fill="#637b8a"/><rect x="5" y="7" width="130" height="64" rx="7" fill="url(#wood)" stroke="#b38c64" stroke-width="1.4"/><rect x="9" y="11" width="122" height="56" rx="4" stroke="#fff9ec" stroke-opacity=".6"/><path d="M18 28C50 25 88 30 122 27M17 48C50 46 91 49 122 47" stroke="#bf9466" stroke-opacity=".25"/><rect x="102" y="67" width="24" height="7" rx="2.5" fill="#3c5362"/><rect x="105" y="69" width="8" height="2.5" rx="1" fill="#b2d0cf"/><path d="M117 69.8h2m3 0h1" stroke="#dce7ed" stroke-width="1.2"/></g></svg>

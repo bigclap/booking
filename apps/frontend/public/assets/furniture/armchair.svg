@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="78" height="82" viewBox="0 0 78 82" fill="none"><title>Кресло</title><defs>
+      <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="2" stdDeviation="1.5" flood-color="#223b49" flood-opacity=".16"/></filter>
+      <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f4dfbe"/><stop offset="1" stop-color="#dfb887"/></linearGradient>
+      <linearGradient id="fabric" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#a0b5c5"/><stop offset="1" stop-color="#7894a9"/></linearGradient>
+      <linearGradient id="back" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#6c8a9d"/><stop offset="1" stop-color="#496a80"/></linearGradient>
+      <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fbfcfb"/><stop offset="1" stop-color="#dce3e7"/></linearGradient>
+    </defs><g filter="url(#shadow)"><rect x="7" y="8" width="64" height="66" rx="17" fill="#4d6f83" stroke="#39596f" stroke-width="1.4"/><rect x="17" y="22" width="44" height="43" rx="12" fill="url(#fabric)" stroke="#6d8da2"/><rect x="13" y="10" width="52" height="16" rx="8" fill="url(#back)" stroke="#496b81"/><rect x="7" y="23" width="12" height="44" rx="6" fill="#6c8da3" stroke="#44677d"/><rect x="59" y="23" width="12" height="44" rx="6" fill="#6c8da3" stroke="#44677d"/><path d="M23 31c7-3 25-3 32 0M24 61h30" stroke="#c4d5e0" stroke-opacity=".4" stroke-linecap="round"/></g></svg>

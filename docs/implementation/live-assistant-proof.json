@@ -1,0 +1,73 @@
+{
+  "verified_date": "2026-11-12",
+  "environment": "local Docker dev via Nginx http://localhost:5178",
+  "configured_model": "~deepseek/deepseek-flash-latest",
+  "response_models": ["deepseek/deepseek-v4.1-flash-1017"],
+  "generation_id": "74be1a3c-d1e8-400f-9736-d4a6edf01810",
+  "chat_id": "f9983eff-a365-4142-a2ed-6828d00dd014",
+  "status": "completed",
+  "elapsed_seconds": 9.834427,
+  "tool_calls": [
+    {
+      "name": "list_offices",
+      "arguments": {}
+    },
+    {
+      "name": "get_office",
+      "arguments": {
+        "office_id": "office-demo"
+      }
+    },
+    {
+      "name": "availability",
+      "arguments": {
+        "office_id": "office-demo",
+        "date": "2026-11-13",
+        "start": 600,
+        "end": 660,
+        "kind": "workstation",
+        "participants": null
+      }
+    },
+    {
+      "name": "prepare_booking",
+      "arguments": {
+        "office_id": "office-demo",
+        "resource_id": "f1-open-0-left",
+        "floor_id": "floor-first",
+        "date": "2026-11-13",
+        "start": 600,
+        "end": 660,
+        "participants": null
+      }
+    }
+  ],
+  "result": {
+    "message": "Проверил занятость в офисе на Лесной на 13 ноября 2026 года, 10:00–11:00. На 1 этаже свободно рабочее место «Место 1»; конфликтов по брони нет.\n\nПодготовлена форма подтверждения:\nhttp://localhost:5178/booking?officeId=office-demo&floorId=floor-first&resourceId=f1-open-0-left&date=2026-11-13&start=600&end=660\n\nБронь пока не создана. Она появится только после подтверждения формы; доступность будет проверена повторно.",
+    "proposal": {
+      "end": 660,
+      "url": "http://localhost:5178/booking?officeId=office-demo&floorId=floor-first&resourceId=f1-open-0-left&date=2026-11-13&start=600&end=660",
+      "date": "2026-11-13",
+      "start": 600,
+      "floorId": "floor-first",
+      "officeId": "office-demo",
+      "resourceId": "f1-open-0-left"
+    }
+  },
+  "archive": {
+    "archived_at": "2026-11-12 19:39:01.156941+00:00",
+    "archive_reason": "booking_created"
+  },
+  "booking_id": "booking-ab1d1acc-63ef-4b88-bb04-2400071740b9",
+  "booking_counts": {
+    "baseline_total": 2,
+    "baseline_active": 0,
+    "before_confirmation_total": 2,
+    "before_confirmation_active": 0,
+    "after_confirmation_total": 3,
+    "after_confirmation_active": 1,
+    "after_cleanup_total": 3,
+    "after_cleanup_active": 0
+  },
+  "cleanup": "Control booking cancelled through UI, history retained; active count returned to baseline."
+}

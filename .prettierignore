@@ -1,0 +1,13 @@
+# Dependencies, generated builds, and private environments.
+node_modules/
+dist/
+coverage/
+.vite/
+.env
+.env.*
+*.local
+.idea/
+.cache/
+
+# The source assignment is a verbatim transcription with a recorded checksum.
+docs/source/assignment.md

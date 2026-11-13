@@ -1,0 +1,58 @@
+# Isolated, disposable data. This file never connects tests to the developer's databases.
+name: workplace-booking-tests
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: test-postgres
+      USERS_DB_PASSWORD: test-users
+      BOOKING_DB_PASSWORD: test-booking
+      ASSISTANT_DB_PASSWORD: test-assistant
+    tmpfs: [/var/lib/postgresql/data]
+    volumes:
+      - ./infra/postgres/init-databases.sh:/docker-entrypoint-initdb.d/10-databases.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d postgres']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  nats:
+    image: nats:2.11-alpine
+    command: [-c, /etc/nats/nats.conf]
+    tmpfs: [/data]
+    volumes:
+      - ./infra/nats/nats.conf:/etc/nats/nats.conf:ro
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8222/healthz?js-enabled-only=true']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  tests:
+    image: workplace-booking-dev
+    build:
+      context: .
+      dockerfile: infra/backend.dev.Dockerfile
+      target: dev
+    init: true
+    environment:
+      PYTHONDONTWRITEBYTECODE: '1'
+      INTERNAL_API_KEY: test-internal-key-at-least-24-characters # gitleaks:allow -- test fixture
+      WEB_JWT_SECRET: test-web-signing-key-with-at-least-32-characters
+      NATS_URL: nats://nats:4222
+      TEST_USERS_DATABASE_URL: postgresql+asyncpg://workplace_users:test-users@postgres:5432/users
+      USERS_TEST_DATABASE_URL: postgresql+asyncpg://workplace_users:test-users@postgres:5432/users
+      TEST_BOOKING_DATABASE_URL: postgresql+asyncpg://workplace_booking:test-booking@postgres:5432/booking
+      TEST_ASSISTANT_DATABASE_URL: postgresql+asyncpg://workplace_assistant:test-assistant@postgres:5432/assistant
+    volumes:
+      - ./apps:/workspace/apps:ro
+      - ./packages:/workspace/packages:ro
+      - ./scripts:/workspace/scripts:ro
+    command: [pytest, -q]
+    depends_on:
+      postgres: { condition: service_healthy }
+      nats: { condition: service_healthy }

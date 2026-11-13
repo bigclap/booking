@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="76" height="76" viewBox="0 0 76 76" fill="none"><title>Кресло-мешок</title><defs>
+      <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="2" stdDeviation="1.5" flood-color="#223b49" flood-opacity=".16"/></filter>
+      <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f4dfbe"/><stop offset="1" stop-color="#dfb887"/></linearGradient>
+      <linearGradient id="fabric" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#a0b5c5"/><stop offset="1" stop-color="#7894a9"/></linearGradient>
+      <linearGradient id="back" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#6c8a9d"/><stop offset="1" stop-color="#496a80"/></linearGradient>
+      <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fbfcfb"/><stop offset="1" stop-color="#dce3e7"/></linearGradient>
+    </defs><g filter="url(#shadow)"><path d="M40 5C57 5 68 18 70 35c3 19-10 34-30 35C21 72 7 59 6 41 4 22 19 6 40 5Z" fill="#b6a184" stroke="#8e795f" stroke-width="1.4"/><path d="M42 15c12 1 20 11 20 24 0 14-10 24-25 24S14 53 14 40c0-10 5-18 14-22" stroke="#d8c8b0" stroke-width="1.5"/><path d="M38 24c10 0 17 7 17 16 0 10-8 17-18 17s-17-7-17-16c0-10 8-17 18-17Z" fill="#a78e70" fill-opacity=".58"/><path d="M43 8c-5 9-6 16-5 22M9 44c9-3 14-4 20-4m28 21c-6-7-11-11-18-15" stroke="#887256" stroke-opacity=".42" stroke-linecap="round"/><path d="M50 10l7 3" stroke="#e5d7c0" stroke-width="2" stroke-linecap="round"/></g></svg>

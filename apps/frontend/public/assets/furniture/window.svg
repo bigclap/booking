@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="16" viewBox="0 0 120 16" fill="none">
+  <title>Окно</title>
+  <defs>
+    <linearGradient id="glass" x1="0" y1="3" x2="0" y2="13" gradientUnits="userSpaceOnUse"><stop stop-color="#d8edf5"/><stop offset="1" stop-color="#a8cbdc"/></linearGradient>
+    <linearGradient id="frame" x1="0" y1="1" x2="0" y2="15" gradientUnits="userSpaceOnUse"><stop stop-color="#fbfcfb"/><stop offset="1" stop-color="#dce3e7"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="118" height="14" rx="2" fill="url(#frame)" stroke="#8298a5" stroke-width="1.2"/>
+  <rect x="5" y="4" width="110" height="8" rx="1" fill="url(#glass)" stroke="#9ab9ca"/>
+  <path d="M7 6h48m10 0h48" stroke="#f5fcff" stroke-width="1.4" stroke-linecap="round"/>
+  <path d="M59 3v10m3-10v10" stroke="#839ca9" stroke-width="1.2"/>
+  <path d="M3 13h114" stroke="#fbfcfd" stroke-width="1.2"/>
+</svg>
