@@ -40,6 +40,18 @@ compose down --volumes --remove-orphans
 compose build gateway users booking assistant nginx
 docker build -f infra/frontend.Dockerfile --target dev -t workplace-booking-frontend-parser-proof .
 compose up --no-build --pull never -d --wait --wait-timeout 180
+proof_ingress=$(compose port nginx 8080)
+test -n "$proof_ingress"
+docker run --rm --network host workplace-gateway:prod-proof python -c '
+import sys
+import httpx
+with httpx.Client(timeout=10, trust_env=False) as client:
+    base = "http://" + sys.argv[1]
+    assert client.get(base + "/health").status_code == 200
+    page = client.get(base + "/booking")
+    assert page.status_code == 200 and "<html" in page.text.lower()
+print("OK host ingress: published Nginx port reaches the frontend from outside its network")
+' "$proof_ingress"
 compose run --rm --no-deps bootstrap
 compose run --rm --no-deps bootstrap
 # The OAuth SDK permits plain HTTP only for loopback. Share Nginx's namespace

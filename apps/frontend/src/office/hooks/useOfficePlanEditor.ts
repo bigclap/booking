@@ -492,8 +492,20 @@ export function useOfficePlanEditor(office: OfficeConfig) {
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if (recoveryRef.current) return;
-      if ((event.target as HTMLElement).matches('input,textarea,select,[contenteditable]')) return;
+      // A modal owns keyboard input even while focus is temporarily on BODY.
+      if (
+        event.defaultPrevented ||
+        recoveryRef.current ||
+        document.querySelector(
+          '[role="dialog"][aria-modal="true"],[role="alertdialog"][aria-modal="true"]',
+        )
+      )
+        return;
+      if (
+        event.target instanceof Element &&
+        event.target.closest('input,textarea,select,[contenteditable]')
+      )
+        return;
       const key = event.key.toLowerCase();
       if ((event.ctrlKey || event.metaKey) && key === 'z') {
         event.preventDefault();

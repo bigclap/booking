@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react';
+import { useId, useLayoutEffect, useRef } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { CloseButton, Styles } from '../atoms';
 
@@ -131,6 +131,16 @@ const styles = String.raw`
 }
 `;
 
+function isTopDialog(element: HTMLElement): boolean {
+  return (
+    [
+      ...document.querySelectorAll<HTMLElement>(
+        '[role="dialog"][aria-modal="true"],[role="alertdialog"][aria-modal="true"]',
+      ),
+    ].at(-1) === element
+  );
+}
+
 export function Dialog({
   open,
   onClose,
@@ -154,17 +164,12 @@ export function Dialog({
   close.current = onClose;
   pending.current = busy;
   const titleId = useId();
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    panel.current?.focus();
+    if (panel.current && isTopDialog(panel.current)) panel.current.focus();
     const key = (event: KeyboardEvent) => {
-      const dialogs = [
-        ...document.querySelectorAll<HTMLElement>(
-          '[role="dialog"][aria-modal="true"],[role="alertdialog"][aria-modal="true"]',
-        ),
-      ];
-      if (dialogs.at(-1) !== panel.current) return;
+      if (!panel.current || !isTopDialog(panel.current)) return;
       if (event.key === 'Escape' && !pending.current) {
         event.preventDefault();
         close.current();
@@ -205,6 +210,13 @@ export function Dialog({
       if (previous?.isConnected) previous.focus();
     };
   }, [open]);
+  useLayoutEffect(() => {
+    const current = panel.current;
+    // A new dialog view can remove the focused field or footer while `open` stays true.
+    // Recover before paint without disturbing input focus or a dialog above this one.
+    if (open && current && isTopDialog(current) && !current.contains(document.activeElement))
+      current.focus();
+  });
   if (!open) return null;
   return (
     <>
